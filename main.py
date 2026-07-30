@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
 from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from database import get_db
 import auth
 import models
@@ -64,3 +64,44 @@ def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
         return {"exists": False, "message": "Nu există niciun cont cu acest email"}
 
     return {"exists": True, "message": "Emailul este corect, contul există"}
+
+# ---------- Schema pentru datele de înregistrare ----------
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    username: str
+    password: str
+    password_confirm: str
+
+
+# ---------- Endpoint de înregistrare ----------
+
+@app.post("/register")
+def register(data: RegisterRequest, db: Session = Depends(get_db)):
+    if data.password != data.password_confirm:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Parolele nu coincid"
+        )
+
+    existing_user = db.query(models.User).filter(
+        (models.User.email == data.email) | (models.User.username == data.username)
+    ).first()
+
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Există deja un cont cu acest email sau username"
+        )
+
+    new_user = models.User(
+        email=data.email,
+        username=data.username,
+        hashed_password=auth.hash_password(data.password)
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    token = auth.create_token(new_user.id)
+    return {"access_token": token, "token_type": "bearer"}
