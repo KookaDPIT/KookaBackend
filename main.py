@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
 from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from pydantic import BaseModel, EmailStr
 from database import get_db
 import auth
@@ -10,6 +11,14 @@ import models
 
 # creează toate tabelele în DB la pornire
 Base.metadata.create_all(bind=engine)
+
+# Migrare defensivă: adaugă coloana full_name pentru tabelele users deja
+# existente (Postgres suportă IF NOT EXISTS, deci e sigur să rulăm la fiecare
+# pornire). Fără asta, INSERT-ul de la /register ar pica pe o bază veche.
+with engine.begin() as conn:
+    conn.execute(
+        text("ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR DEFAULT ''")
+    )
 
 app = FastAPI(title="Cooking App API")
 
@@ -68,6 +77,7 @@ def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
 # ---------- Schema pentru datele de înregistrare ----------
 
 class RegisterRequest(BaseModel):
+    full_name: str = ""
     email: EmailStr
     username: str
     password: str
@@ -95,6 +105,7 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
         )
 
     new_user = models.User(
+        full_name=data.full_name,
         email=data.email,
         username=data.username,
         hashed_password=auth.hash_password(data.password)
