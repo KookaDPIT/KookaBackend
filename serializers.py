@@ -132,8 +132,9 @@ def user_to_dict(db: Session, u: "models.User", viewer: "models.User" = None):
     }
 
 
-def review_to_dict(db: Session, rv: "models.Review", viewer: "models.User" = None):
-    return {
+def review_to_dict(db: Session, rv: "models.Review", viewer: "models.User" = None,
+                   with_recipe: bool = False):
+    data = {
         "id": rv.id,
         "rating": rv.rating,
         "comment": rv.comment or "",
@@ -143,3 +144,12 @@ def review_to_dict(db: Session, rv: "models.Review", viewer: "models.User" = Non
         "created_at": rv.created_at.isoformat() if rv.created_at else None,
         "is_mine": viewer is not None and rv.user_id == viewer.id,
     }
+    if with_recipe:
+        r = rv.recipe
+        data["recipe"] = {
+            "id": r.id,
+            "title": r.title,
+            "image_url": r.image_url or "",
+            "origin": r.origin or "",
+        } if r else None
+    return data

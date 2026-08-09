@@ -2,7 +2,9 @@
 
 Regula: poți lăsa recenzie doar după ce ai marcat rețeta ca gătită ȘI AI-ul a
 confirmat poza (cooked_verified). Îți poți edita/șterge propria recenzie."""
-from fastapi import APIRouter, Depends, HTTPException, status
+import base64
+
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
 
 import models
@@ -27,24 +29,37 @@ def _saved(db: Session, user_id: int, recipe_id: int):
 
 
 @router.post("/recipes/{recipe_id}/cook/verify")
-def verify_cook(
+async def verify_cook(
     recipe_id: int,
-    data: schemas.CookVerifyRequest,
+    file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
+    """Verifică poza de gătit cu AI-ul FĂRĂ a o stoca nicăieri.
+
+    Imaginea e trimisă lui Groq ca data-URI base64 (efemer, în memorie) și apoi
+    aruncată — nu ajunge pe ImageKit, iar `cook_photo_url` rămâne gol."""
     recipe = db.query(models.Recipe).filter(models.Recipe.id == recipe_id).first()
     if not recipe:
         raise HTTPException(404, "Rețeta nu există")
 
-    result = ai.verify_cook(title=recipe.title, image_url=data.cook_photo_url)
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "Fișier gol")
+    if len(content) > 8 * 1024 * 1024:
+        raise HTTPException(400, "Imaginea depășește 8 MB")
+
+    mime = file.content_type or "image/jpeg"
+    data_uri = f"data:{mime};base64,{base64.b64encode(content).decode()}"
+
+    result = ai.verify_cook(title=recipe.title, image_url=data_uri)
 
     saved = _saved(db, user.id, recipe_id)
     if not saved:
         saved = models.SavedRecipe(user_id=user.id, recipe_id=recipe_id)
         db.add(saved)
     saved.cooked = True
-    saved.cook_photo_url = data.cook_photo_url
+    saved.cook_photo_url = ""  # dovada NU se păstrează
     saved.cooked_verified = bool(result["verified"])
 
     if result["verified"]:
@@ -56,6 +71,23 @@ def verify_cook(
         "reason": result["reason"],
         "can_review": bool(result["verified"]),
     }
+
+
+@router.get("/reviews/recent")
+def recent_reviews(
+    limit: int = 8,
+    db: Session = Depends(get_db),
+    viewer: models.User = Depends(get_current_user_optional),
+):
+    """Cele mai recente recenzii din toată aplicația, cu info despre rețetă
+    (pentru secțiunea „Fresh reviews" de pe Home)."""
+    reviews = (
+        db.query(models.Review)
+        .order_by(models.Review.created_at.desc())
+        .limit(min(limit, 30))
+        .all()
+    )
+    return [serializers.review_to_dict(db, r, viewer, with_recipe=True) for r in reviews]
 
 
 @router.get("/recipes/{recipe_id}/reviews")
