@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 import auth
 import models
 from database import get_db
-
+from datetime import datetime
 # Schema Bearer — FastAPI citește header-ul `Authorization: Bearer <token>`
 # și afișează butonul "Authorize" în /docs.
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -71,5 +71,32 @@ def get_current_admin(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Necesită drepturi de moderator",
+        )
+    return user
+
+ROLE_LEVELS = {"user": 1, "moderator": 2, "admin": 3}
+
+
+def require_role(min_role: str):
+    """Dependency-factory: permite accesul doar userilor cu rolul minim cerut.
+    Exemplu de folosire pe un endpoint: Depends(deps.require_role("admin"))"""
+    def checker(user: models.User = Depends(get_current_user)) -> models.User:
+        if ROLE_LEVELS.get(user.role, 0) < ROLE_LEVELS.get(min_role, 0):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Nu ai permisiunea necesară",
+            )
+        return user
+    return checker
+
+
+def require_not_suspended(
+    user: models.User = Depends(get_current_user),
+) -> models.User:
+    """Blochează scrierea dacă userul e suspendat (suspended_until în viitor)."""
+    if user.suspended_until and user.suspended_until > datetime.utcnow():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Cont suspendat până la {user.suspended_until.strftime('%d.%m.%Y %H:%M')} UTC",
         )
     return user

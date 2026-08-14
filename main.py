@@ -29,6 +29,7 @@ _MIGRATIONS = [
     "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS ai_notes TEXT DEFAULT ''",
     "ALTER TABLE saved_recipes ADD COLUMN IF NOT EXISTS cooked_verified BOOLEAN DEFAULT FALSE",
     "ALTER TABLE saved_recipes ADD COLUMN IF NOT EXISTS cook_photo_url VARCHAR DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_until TIMESTAMP",
 ]
 # Rulăm fiecare migrare izolat: o coloană care există deja (sau un dialect care
 # nu suportă IF NOT EXISTS, ex. SQLite local) nu trebuie să blocheze pornirea.
@@ -96,7 +97,7 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
             detail="Cont dezactivat. Contactează un administrator."
         )
 
-    token = auth.create_token(user.id)
+    token = auth.create_token(user.id, user.role)
     return {"access_token": token, "token_type": "bearer"}
 
 
@@ -151,5 +152,5 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_user)
 
-    token = auth.create_token(new_user.id)
+    token = auth.create_token(new_user.id, new_user.role)
     return {"access_token": token, "token_type": "bearer"}
