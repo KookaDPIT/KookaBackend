@@ -23,6 +23,7 @@ class User(Base):
     preferences = Column(Text, default="")
     avatar_url = Column(String, default="")
     bio = Column(Text, default="")
+    settings = Column(Text, default="")            # JSON: preferințe client (privacy, notificări, mesaje, 2FA, blocked)
     is_active = Column(Boolean, default=True)      # dezactivat de moderator/admin
     role = Column(String, default="user")          # user / moderator / admin
     created_at = Column(DateTime, default=datetime.utcnow)

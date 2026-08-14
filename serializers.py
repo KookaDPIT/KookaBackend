@@ -114,11 +114,12 @@ def user_to_dict(db: Session, u: "models.User", viewer: "models.User" = None):
             .first()
             is not None
         )
-    return {
+    is_self = viewer is not None and viewer.id == u.id
+    data = {
         "id": u.id,
         "username": u.username,
         "full_name": u.full_name,
-        "email": u.email if (viewer is not None and viewer.id == u.id) else None,
+        "email": u.email if is_self else None,
         "avatar_url": u.avatar_url or "",
         "bio": u.bio or "",
         "level": u.level,
@@ -128,8 +129,16 @@ def user_to_dict(db: Session, u: "models.User", viewer: "models.User" = None):
         "following": int(following or 0),
         "recipe_count": int(recipe_count or 0),
         "is_following": is_following,
-        "is_self": viewer is not None and viewer.id == u.id,
+        "is_self": is_self,
+        "created_at": u.created_at.isoformat() if u.created_at else None,
     }
+    # preferințele de cont sunt private — le trimitem doar posesorului
+    if is_self:
+        data["theme"] = u.theme or "light"
+        data["language"] = u.language or "ro"
+        data["units"] = u.units or "metric"
+        data["settings"] = _load_json(getattr(u, "settings", ""), {})
+    return data
 
 
 def review_to_dict(db: Session, rv: "models.Review", viewer: "models.User" = None,

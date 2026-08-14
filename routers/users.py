@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+import auth
 import models
 import schemas
 import serializers
@@ -26,11 +27,54 @@ def update_me(
     user: models.User = Depends(get_current_user),
 ):
     payload = data.model_dump(exclude_none=True)
+
+    # username/email sunt unice — verifică să nu fie deja luate de alt cont
+    new_username = payload.get("username")
+    if new_username is not None:
+        new_username = new_username.strip().lstrip("@")
+        if not new_username:
+            raise HTTPException(400, "Numele de utilizator nu poate fi gol")
+        taken = (
+            db.query(models.User)
+            .filter(models.User.username == new_username, models.User.id != user.id)
+            .first()
+        )
+        if taken:
+            raise HTTPException(400, "Numele de utilizator este deja folosit")
+        payload["username"] = new_username
+
+    new_email = payload.get("email")
+    if new_email is not None:
+        new_email = new_email.strip()
+        if not new_email:
+            raise HTTPException(400, "Emailul nu poate fi gol")
+        taken = (
+            db.query(models.User)
+            .filter(models.User.email == new_email, models.User.id != user.id)
+            .first()
+        )
+        if taken:
+            raise HTTPException(400, "Emailul este deja folosit")
+        payload["email"] = new_email
+
     for field, value in payload.items():
         setattr(user, field, value)
     db.commit()
     db.refresh(user)
     return serializers.user_to_dict(db, user, viewer=user)
+
+
+@router.patch("/me/password")
+def change_password(
+    data: schemas.PasswordChange,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    if not auth.verify_password(data.current_password, user.hashed_password):
+        raise HTTPException(400, "Parola curentă este incorectă")
+    user.hashed_password = auth.hash_password(data.new_password)
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/users/{user_id}")

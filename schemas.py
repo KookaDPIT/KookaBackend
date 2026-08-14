@@ -60,7 +60,18 @@ class CookVerifyRequest(BaseModel):
 # ---------- USERS / PROFILE ----------
 class ProfileUpdate(BaseModel):
     full_name: Optional[str] = None
+    username: Optional[str] = None
+    email: Optional[str] = None
     bio: Optional[str] = None
     avatar_url: Optional[str] = None
     allergies: Optional[str] = None
     preferences: Optional[str] = None
+    theme: Optional[str] = None
+    language: Optional[str] = None
+    units: Optional[str] = None
+    settings: Optional[str] = None   # JSON serializat cu preferințele de client
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=6, max_length=72)
