@@ -64,6 +64,7 @@ class ProfileUpdate(BaseModel):
     email: Optional[str] = None
     bio: Optional[str] = None
     avatar_url: Optional[str] = None
+    cover_url: Optional[str] = None
     allergies: Optional[str] = None
     preferences: Optional[str] = None
     theme: Optional[str] = None

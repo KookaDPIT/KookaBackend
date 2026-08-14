@@ -86,11 +86,23 @@ def get_user(
     u = db.query(models.User).filter(models.User.id == user_id).first()
     if not u:
         raise HTTPException(404, "Utilizatorul nu există")
+    # cont privat pe care nu-l urmărești → doar identitatea (nume + username)
+    if not serializers.can_view_profile(db, u, viewer):
+        return serializers.user_public_limited(db, u, viewer)
     return serializers.user_to_dict(db, u, viewer=viewer)
 
 
 @router.get("/users/{user_id}/recipes")
-def user_recipes(user_id: int, db: Session = Depends(get_db)):
+def user_recipes(
+    user_id: int,
+    db: Session = Depends(get_db),
+    viewer: models.User = Depends(get_current_user_optional),
+):
+    u = db.query(models.User).filter(models.User.id == user_id).first()
+    if not u:
+        raise HTTPException(404, "Utilizatorul nu există")
+    if not serializers.can_view_profile(db, u, viewer):
+        return []
     recipes = (
         db.query(models.Recipe)
         .filter(
@@ -101,6 +113,77 @@ def user_recipes(user_id: int, db: Session = Depends(get_db)):
         .all()
     )
     return [serializers.recipe_to_dict(db, r) for r in recipes]
+
+
+@router.get("/users/{user_id}/activity")
+def user_activity(
+    user_id: int,
+    db: Session = Depends(get_db),
+    viewer: models.User = Depends(get_current_user_optional),
+):
+    """Activitate recentă compusă din: rețete publicate, recenzii scrise și
+    preparate gătite-verificate. Respectă confidențialitatea profilului."""
+    u = db.query(models.User).filter(models.User.id == user_id).first()
+    if not u:
+        raise HTTPException(404, "Utilizatorul nu există")
+    if not serializers.can_view_profile(db, u, viewer):
+        return []
+
+    items = []
+
+    authored = (
+        db.query(models.Recipe)
+        .filter(models.Recipe.author_id == user_id, models.Recipe.moderation_status == "ok")
+        .order_by(models.Recipe.created_at.desc())
+        .limit(10)
+        .all()
+    )
+    for r in authored:
+        items.append({
+            "kind": "created",
+            "what": r.title,
+            "recipe_id": r.id,
+            "when": r.created_at.isoformat() if r.created_at else None,
+        })
+
+    reviews = (
+        db.query(models.Review)
+        .filter(models.Review.user_id == user_id)
+        .order_by(models.Review.created_at.desc())
+        .limit(10)
+        .all()
+    )
+    for rv in reviews:
+        items.append({
+            "kind": "reviewed",
+            "what": rv.recipe.title if rv.recipe else "",
+            "recipe_id": rv.recipe_id,
+            "when": rv.created_at.isoformat() if rv.created_at else None,
+        })
+
+    cooked = (
+        db.query(models.SavedRecipe)
+        .join(models.Recipe, models.Recipe.id == models.SavedRecipe.recipe_id)
+        .filter(
+            models.SavedRecipe.user_id == user_id,
+            models.SavedRecipe.cooked_verified == True,
+        )
+        .order_by(models.SavedRecipe.created_at.desc())
+        .limit(10)
+        .all()
+    )
+    for s in cooked:
+        recipe = db.query(models.Recipe).filter(models.Recipe.id == s.recipe_id).first()
+        items.append({
+            "kind": "cooked",
+            "what": recipe.title if recipe else "",
+            "recipe_id": s.recipe_id,
+            "when": s.created_at.isoformat() if s.created_at else None,
+        })
+
+    # cele mai noi primele; punem la coadă cele fără dată
+    items.sort(key=lambda x: x["when"] or "", reverse=True)
+    return items[:15]
 
 
 @router.post("/users/{user_id}/follow", status_code=status.HTTP_201_CREATED)
@@ -174,8 +257,17 @@ def following(
 
 
 @router.get("/users/{user_id}/passport")
-def passport(user_id: int, db: Session = Depends(get_db)):
+def passport(
+    user_id: int,
+    db: Session = Depends(get_db),
+    viewer: models.User = Depends(get_current_user_optional),
+):
     """Țări distincte din rețetele autorate + rețetele gătite-verificate."""
+    u = db.query(models.User).filter(models.User.id == user_id).first()
+    if not u:
+        raise HTTPException(404, "Utilizatorul nu există")
+    if not serializers.can_view_profile(db, u, viewer):
+        return {"countries": [], "total": 0}
     counts = {}
 
     authored = (

@@ -22,6 +22,7 @@ class User(Base):
     allergies = Column(Text, default="")          # listă simplă, separată prin virgulă
     preferences = Column(Text, default="")
     avatar_url = Column(String, default="")
+    cover_url = Column(String, default="")         # imaginea de fundal (cover) a profilului
     bio = Column(Text, default="")
     settings = Column(Text, default="")            # JSON: preferințe client (privacy, notificări, mesaje, 2FA, blocked)
     is_active = Column(Boolean, default=True)      # dezactivat de moderator/admin

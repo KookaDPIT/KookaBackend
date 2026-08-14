@@ -115,12 +115,15 @@ def user_to_dict(db: Session, u: "models.User", viewer: "models.User" = None):
             is not None
         )
     is_self = viewer is not None and viewer.id == u.id
+    prefs = _load_json(getattr(u, "settings", ""), {})
+    is_private = bool(prefs.get("privateAccount", False))
     data = {
         "id": u.id,
         "username": u.username,
         "full_name": u.full_name,
         "email": u.email if is_self else None,
         "avatar_url": u.avatar_url or "",
+        "cover_url": getattr(u, "cover_url", "") or "",
         "bio": u.bio or "",
         "level": u.level,
         "xp_total": u.xp_total,
@@ -130,6 +133,7 @@ def user_to_dict(db: Session, u: "models.User", viewer: "models.User" = None):
         "recipe_count": int(recipe_count or 0),
         "is_following": is_following,
         "is_self": is_self,
+        "private": is_private,
         "created_at": u.created_at.isoformat() if u.created_at else None,
     }
     # preferințele de cont sunt private — le trimitem doar posesorului
@@ -139,6 +143,50 @@ def user_to_dict(db: Session, u: "models.User", viewer: "models.User" = None):
         data["units"] = u.units or "metric"
         data["settings"] = _load_json(getattr(u, "settings", ""), {})
     return data
+
+
+def _is_following(db: Session, viewer: "models.User", u: "models.User") -> bool:
+    if viewer is None or viewer.id == u.id:
+        return False
+    return (
+        db.query(models.Follow)
+        .filter(models.Follow.follower_id == viewer.id, models.Follow.following_id == u.id)
+        .first()
+        is not None
+    )
+
+
+def can_view_profile(db: Session, u: "models.User", viewer: "models.User") -> bool:
+    """Un profil privat e vizibil complet doar posesorului sau urmăritorilor."""
+    prefs = _load_json(getattr(u, "settings", ""), {})
+    if not prefs.get("privateAccount", False):
+        return True
+    if viewer is not None and viewer.id == u.id:
+        return True
+    return _is_following(db, viewer, u)
+
+
+def user_public_limited(db: Session, u: "models.User", viewer: "models.User" = None):
+    """Payload minim pentru un cont privat pe care nu-l urmărești: doar
+    identitatea (nume + username) + coperta, ca să poți cere follow."""
+    is_self = viewer is not None and viewer.id == u.id
+    followers = (
+        db.query(func.count(models.Follow.id))
+        .filter(models.Follow.following_id == u.id)
+        .scalar()
+    )
+    return {
+        "id": u.id,
+        "username": u.username,
+        "full_name": u.full_name,
+        "avatar_url": u.avatar_url or "",
+        "cover_url": getattr(u, "cover_url", "") or "",
+        "followers": int(followers or 0),
+        "private": True,
+        "locked": True,
+        "is_following": _is_following(db, viewer, u),
+        "is_self": is_self,
+    }
 
 
 def review_to_dict(db: Session, rv: "models.Review", viewer: "models.User" = None,
