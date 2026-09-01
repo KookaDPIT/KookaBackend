@@ -115,6 +115,7 @@ class ForumPost(Base):
     # Subforumul e limba în care scrii; subiectul îl dă tag-ul.
     language = Column(String, default="en", index=True)
     tag = Column(String, default="question", index=True)
+    moderation_status = Column(String, default="ok")  # ok / hidden (moderare)
     votes = Column(Integer, default=0)      # sumă cache-uită a ForumVote
     views = Column(Integer, default=0)
     author_id = Column(Integer, ForeignKey("users.id"))
@@ -176,6 +177,20 @@ class Follow(Base):
     follower_id = Column(Integer, ForeignKey("users.id"))   # cine urmărește
     following_id = Column(Integer, ForeignKey("users.id"))  # cine e urmărit
     created_at = Column(DateTime, default=datetime.utcnow)
+
+# ---------- BLOCĂRI ÎNTRE UTILIZATORI ----------
+class Block(Base):
+    """Blocarea e unidirecțională ca acțiune, dar simetrică ca efect: dacă A îl
+    blochează pe B, niciunul nu mai vede conținutul celuilalt."""
+    __tablename__ = "blocks"
+    __table_args__ = (
+        UniqueConstraint("blocker_id", "blocked_id", name="uq_block_pair"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    blocker_id = Column(Integer, ForeignKey("users.id"), index=True)
+    blocked_id = Column(Integer, ForeignKey("users.id"), index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 
 # ---------- DAILY GLOBAL DISH (Secțiunea 4 - istoric zilnic) ----------
 class DailyDish(Base):

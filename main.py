@@ -7,6 +7,7 @@ from sqlalchemy import text, func
 from pydantic import BaseModel, EmailStr
 from database import get_db
 import auth
+import deps
 import models
 
 # creează toate tabelele în DB la pornire
@@ -33,6 +34,7 @@ _MIGRATIONS = [
     "ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS language VARCHAR DEFAULT 'en'",
     "ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS tag VARCHAR DEFAULT 'question'",
     "ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS views INTEGER DEFAULT 0",
+    "ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS moderation_status VARCHAR DEFAULT 'ok'",
 ]
 # Rulăm fiecare migrare izolat: o coloană care există deja (sau un dialect care
 # nu suportă IF NOT EXISTS, ex. SQLite local) nu trebuie să blocheze pornirea.
@@ -124,21 +126,27 @@ def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
 
 # ---------- Disponibilitate username / email ----------
 
-def _username_taken(db: Session, username: str) -> bool:
+def _username_taken(db: Session, username: str, except_id: int = None) -> bool:
     """Comparație case-insensitive: `Alex` și `alex` sunt același handle."""
     if not username:
         return False
-    return db.query(models.User).filter(
+    q = db.query(models.User).filter(
         func.lower(models.User.username) == username.strip().lstrip("@").lower()
-    ).first() is not None
+    )
+    if except_id is not None:
+        q = q.filter(models.User.id != except_id)
+    return q.first() is not None
 
 
-def _email_taken(db: Session, email: str) -> bool:
+def _email_taken(db: Session, email: str, except_id: int = None) -> bool:
     if not email:
         return False
-    return db.query(models.User).filter(
+    q = db.query(models.User).filter(
         func.lower(models.User.email) == email.strip().lower()
-    ).first() is not None
+    )
+    if except_id is not None:
+        q = q.filter(models.User.id != except_id)
+    return q.first() is not None
 
 
 @app.get("/auth/availability")
@@ -146,15 +154,18 @@ def check_availability(
     username: str = "",
     email: str = "",
     db: Session = Depends(get_db),
+    viewer: models.User = Depends(deps.get_current_user_optional),
 ):
-    """Verificare live folosită de formularul de înregistrare, ca userul să afle
-    că handle-ul/emailul e ocupat înainte de a apăsa "Creează cont".
-    Întoarce doar booleeni — nu confirmă niciodată cui aparține contul."""
+    """Verificare live pentru formularul de înregistrare ȘI pentru ecranul de
+    setări. Dacă apelantul e autentificat, propriul cont e exclus din verificare
+    — altfel ți-ai vedea propriul username raportat drept „ocupat" de îndată ce
+    deschizi setările. Întoarce doar booleeni, niciodată cui aparține contul."""
+    except_id = viewer.id if viewer is not None else None
     result = {}
     if username.strip():
-        result["username_taken"] = _username_taken(db, username)
+        result["username_taken"] = _username_taken(db, username, except_id)
     if email.strip():
-        result["email_taken"] = _email_taken(db, email)
+        result["email_taken"] = _email_taken(db, email, except_id)
     return result
 
 

@@ -22,6 +22,7 @@ from deps import (
     get_current_user_optional,
     require_not_suspended,
 )
+from services import visibility
 
 router = APIRouter(prefix="/forum", tags=["forum"])
 
@@ -152,6 +153,7 @@ def _my_votes(db: Session, viewer, post_ids):
 def _post_to_dict(post, comments=0, my_vote=0, with_body=False):
     data = {
         "id": post.id,
+        "is_hidden": (post.moderation_status or "ok") == "hidden",
         "title": post.title,
         "language": post.language or "en",
         "tag": post.tag or "question",
@@ -189,30 +191,41 @@ def _can_moderate(user) -> bool:
 #  Meta (subforumuri, taguri, tendințe)
 # ==========================================================================
 @router.get("/meta")
-def meta(db: Session = Depends(get_db)):
+def meta(
+    db: Session = Depends(get_db),
+    viewer: models.User = Depends(get_current_user_optional),
+):
     """Tot ce are nevoie interfața ca să deseneze filtrele: limbile cu numărul
     de postări, tagurile, și tagurile în tendință din ultimele 7 zile."""
+    # numărătorile trebuie să reflecte ce se poate chiar deschide, altfel un
+    # subforum arată „3 postări" și se deschide gol
+    visible = visibility.visible_authors(
+        db.query(models.ForumPost).filter(models.ForumPost.moderation_status == "ok"),
+        models.ForumPost,
+        visibility.hidden_author_ids(db, viewer),
+    ).subquery()
+
     lang_rows = dict(
-        db.query(models.ForumPost.language, func.count(models.ForumPost.id))
-        .group_by(models.ForumPost.language)
+        db.query(visible.c.language, func.count(visible.c.id))
+        .group_by(visible.c.language)
         .all()
     )
     tag_rows = dict(
-        db.query(models.ForumPost.tag, func.count(models.ForumPost.id))
-        .group_by(models.ForumPost.tag)
+        db.query(visible.c.tag, func.count(visible.c.id))
+        .group_by(visible.c.tag)
         .all()
     )
 
     since = datetime.utcnow() - timedelta(days=7)
     trending_rows = (
         db.query(
-            models.ForumPost.tag,
-            func.count(models.ForumPost.id).label("n"),
-            func.coalesce(func.sum(models.ForumPost.votes), 0).label("v"),
+            visible.c.tag,
+            func.count(visible.c.id).label("n"),
+            func.coalesce(func.sum(visible.c.votes), 0).label("v"),
         )
-        .filter(models.ForumPost.created_at >= since)
-        .group_by(models.ForumPost.tag)
-        .order_by(func.count(models.ForumPost.id).desc())
+        .filter(visible.c.created_at >= since)
+        .group_by(visible.c.tag)
+        .order_by(func.count(visible.c.id).desc())
         .limit(5)
         .all()
     )
@@ -240,7 +253,7 @@ def meta(db: Session = Depends(get_db)):
             {"tag": tag, "posts": int(n or 0), "votes": int(v or 0)}
             for tag, n, v in trending_rows
         ],
-        "total": int(db.query(func.count(models.ForumPost.id)).scalar() or 0),
+        "total": int(db.query(func.count(visible.c.id)).scalar() or 0),
     }
 
 
@@ -261,7 +274,12 @@ def list_posts(
     if sort not in SORTS:
         raise HTTPException(400, f"Sortare invalidă. Alege dintre: {', '.join(SORTS)}")
 
-    query = db.query(models.ForumPost)
+    query = db.query(models.ForumPost).filter(
+        models.ForumPost.moderation_status == "ok"
+    )
+    query = visibility.visible_authors(
+        query, models.ForumPost, visibility.hidden_author_ids(db, viewer)
+    )
 
     term = q.strip()
     if term:
@@ -316,6 +334,13 @@ def get_post(
     if not post:
         raise HTTPException(404, "Postarea nu există")
 
+    staff = _can_moderate(viewer)
+    mine = viewer is not None and post.author_id == viewer.id
+    if (post.moderation_status or "ok") == "hidden" and not (staff or mine):
+        raise HTTPException(404, "Postarea nu există")
+    if post.author_id in visibility.hidden_author_ids(db, viewer):
+        raise HTTPException(404, "Postarea nu există")
+
     post.views = (post.views or 0) + 1
     db.commit()
 
@@ -328,8 +353,9 @@ def get_post(
     mine = _my_votes(db, viewer, [post_id])
     data = _post_to_dict(post, len(comments), mine.get(post_id, 0), with_body=True)
     data["comments"] = [_comment_to_dict(c, viewer) for c in comments]
-    data["can_edit"] = viewer is not None and post.author_id == viewer.id
-    data["can_delete"] = data["can_edit"] or _can_moderate(viewer)
+    data["can_edit"] = mine
+    data["can_delete"] = mine or staff
+    data["can_moderate"] = staff
     return data
 
 
@@ -516,3 +542,27 @@ def delete_comment(
         raise HTTPException(403, "Poți șterge doar propriile comentarii")
     db.delete(comment)
     db.commit()
+
+
+@router.post("/posts/{post_id}/moderate")
+def moderate_post(
+    post_id: int,
+    data: schemas.ModerationAction,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Ascunde / repune o postare direct din thread, fără drum prin consolă."""
+    if not _can_moderate(user):
+        raise HTTPException(403, "Necesită drepturi de moderator")
+    post = db.query(models.ForumPost).filter(models.ForumPost.id == post_id).first()
+    if not post:
+        raise HTTPException(404, "Postarea nu există")
+
+    if data.action == "hide":
+        post.moderation_status = "hidden"
+    elif data.action == "restore":
+        post.moderation_status = "ok"
+    else:
+        raise HTTPException(400, "Acțiune invalidă")
+    db.commit()
+    return {"moderation_status": post.moderation_status}

@@ -9,6 +9,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import models
+from services import visibility
 
 RECENT_RECIPE_DAYS = 14   # nu repeta aceeași rețetă în ultimele 2 săptămâni
 RECENT_ORIGIN_DAYS = 3    # preferă o țară diferită față de ultimele 3 zile
@@ -16,6 +17,16 @@ RECENT_ORIGIN_DAYS = 3    # preferă o țară diferită față de ultimele 3 zil
 
 def _today() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d")
+
+
+def _is_eligible(db: Session, recipe) -> bool:
+    """Publicată și cu autor nesuspendat. O rețetă ascunsă de moderator sau al
+    cărei autor a fost suspendat nu mai are ce căuta pe prima pagină."""
+    if recipe is None or recipe.moderation_status != "ok":
+        return False
+    if recipe.author_id is None:
+        return True
+    return recipe.author_id not in visibility.silenced_user_ids(db)
 
 
 def _score_query(db: Session):
@@ -27,6 +38,7 @@ def _score_query(db: Session):
         db.query(
             models.Recipe.id,
             models.Recipe.origin,
+            models.Recipe.author_id,
             avg_rating,
             review_count,
             save_count,
@@ -34,7 +46,7 @@ def _score_query(db: Session):
         .outerjoin(models.Review, models.Review.recipe_id == models.Recipe.id)
         .outerjoin(models.SavedRecipe, models.SavedRecipe.recipe_id == models.Recipe.id)
         .filter(models.Recipe.moderation_status == "ok")
-        .group_by(models.Recipe.id, models.Recipe.origin)
+        .group_by(models.Recipe.id, models.Recipe.origin, models.Recipe.author_id)
         .order_by(avg_rating.desc(), review_count.desc(), save_count.desc(),
                   models.Recipe.id.desc())
     )
@@ -54,9 +66,13 @@ def get_or_pick_daily(db: Session):
             .filter(models.Recipe.id == existing.recipe_id)
             .first()
         )
-        if recipe:
+        if _is_eligible(db, recipe):
             return recipe
-        # rețeta a fost ștearsă între timp -> re-alegem
+        # Ștearsă, ascunsă de moderator sau autor suspendat între timp. Alegem
+        # alta, dar păstrăm rândul de azi: felul zilei se schimbă o singură dată
+        # și rămâne stabil până la miezul nopții, nu la fiecare cerere.
+        if recipe is not None:
+            recipe.is_daily_dish = False
         db.delete(existing)
         db.commit()
 
@@ -83,7 +99,11 @@ def get_or_pick_daily(db: Session):
         .all()
     } if recent_origin_dish_ids else set()
 
-    ranked = _score_query(db).all()
+    silenced = visibility.silenced_user_ids(db)
+    ranked = [
+        row for row in _score_query(db).all()
+        if row.author_id is None or row.author_id not in silenced
+    ]
     if not ranked:
         return None
 

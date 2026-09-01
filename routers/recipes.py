@@ -9,8 +9,8 @@ import models
 import schemas
 import serializers
 from database import get_db
-from deps import get_current_user
-from services import ai
+from deps import get_current_user, get_current_user_optional
+from services import ai, visibility
 
 router = APIRouter(prefix="/recipes", tags=["recipes"])
 
@@ -77,12 +77,16 @@ def create_recipe(
 @router.get("")
 def list_recipes(
     db: Session = Depends(get_db),
+    viewer: models.User = Depends(get_current_user_optional),
     q: str = Query("", description="căutare titlu/țară"),
     filter: str = Query("", description="recommended|under30|top_rated"),
     limit: int = Query(20, le=100),
     offset: int = 0,
 ):
     query = db.query(models.Recipe).filter(models.Recipe.moderation_status == "ok")
+    query = visibility.visible_authors(
+        query, models.Recipe, visibility.hidden_author_ids(db, viewer)
+    )
 
     if q:
         like = f"%{q.lower()}%"
@@ -111,11 +115,28 @@ def list_recipes(
 
 
 @router.get("/{recipe_id}")
-def get_recipe(recipe_id: int, db: Session = Depends(get_db)):
+def get_recipe(
+    recipe_id: int,
+    db: Session = Depends(get_db),
+    viewer: models.User = Depends(get_current_user_optional),
+):
     recipe = db.query(models.Recipe).filter(models.Recipe.id == recipe_id).first()
-    if not recipe or recipe.moderation_status == "hidden":
+    if not recipe:
         raise HTTPException(404, "Rețeta nu există")
-    return serializers.recipe_to_dict(db, recipe, full=True)
+
+    staff = visibility.is_staff(viewer)
+    mine = viewer is not None and recipe.author_id == viewer.id
+    # ascunsă de moderator: doar autorul și echipa o mai pot deschide
+    if recipe.moderation_status == "hidden" and not (staff or mine):
+        raise HTTPException(404, "Rețeta nu există")
+    # autor suspendat/blocat: 404, nu 403 — un 403 ar confirma că există
+    if recipe.author_id in visibility.hidden_author_ids(db, viewer):
+        raise HTTPException(404, "Rețeta nu există")
+
+    data = serializers.recipe_to_dict(db, recipe, full=True)
+    data["can_moderate"] = staff
+    data["is_hidden"] = recipe.moderation_status == "hidden"
+    return data
 
 
 @router.put("/{recipe_id}")
@@ -176,5 +197,39 @@ def delete_recipe(
         raise HTTPException(404, "Rețeta nu există")
     if recipe.author_id != user.id and user.role not in ("admin", "moderator"):
         raise HTTPException(403, "Nu poți șterge această rețetă")
+
+    # aceleași curățări ca pe calea de moderare: recenziile, salvările și
+    # rezervările de „felul zilei" trebuie să plece odată cu rețeta, altfel
+    # rămân fantome în activitatea și pașaportul altor conturi
+    db.query(models.Review).filter(models.Review.recipe_id == recipe.id).delete()
+    db.query(models.SavedRecipe).filter(models.SavedRecipe.recipe_id == recipe.id).delete()
+    db.query(models.DailyDish).filter(models.DailyDish.recipe_id == recipe.id).delete()
     db.delete(recipe)
     db.commit()
+
+
+# ---------- moderare direct de pe pagina rețetei ----------
+
+@router.post("/{recipe_id}/moderate")
+def moderate_recipe(
+    recipe_id: int,
+    data: schemas.ModerationAction,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Ascunde / repune o rețetă fără ocolul prin consola de moderare — un
+    moderator care tocmai a dat peste ea trebuie s-o poată trata pe loc."""
+    if not visibility.is_staff(user):
+        raise HTTPException(403, "Necesită drepturi de moderator")
+    recipe = db.query(models.Recipe).filter(models.Recipe.id == recipe_id).first()
+    if not recipe:
+        raise HTTPException(404, "Rețeta nu există")
+
+    if data.action == "hide":
+        recipe.moderation_status = "hidden"
+    elif data.action == "restore":
+        recipe.moderation_status = "ok"
+    else:
+        raise HTTPException(400, "Acțiune invalidă")
+    db.commit()
+    return {"moderation_status": recipe.moderation_status}

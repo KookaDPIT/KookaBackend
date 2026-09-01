@@ -1,6 +1,9 @@
 """Utilizatori: /me, profil public, urmărire (follow) și pașaport culinar."""
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
+
+import json
 
 import auth
 import models
@@ -8,8 +11,24 @@ import schemas
 import serializers
 from database import get_db
 from deps import get_current_user, get_current_user_optional
+from services import visibility
 
 router = APIRouter(tags=["users"])
+
+
+def _load_settings(user) -> dict:
+    try:
+        return json.loads(user.settings or "{}") or {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def _dismissed_activity(user) -> set:
+    """Intrările pe care posesorul le-a scos din propria activitate. Stocate în
+    blobul de preferințe, nu într-un tabel: e o alegere de afișare, nu date —
+    iar ascunderea nu trebuie să șteargă rețeta sau recenzia de dedesubt."""
+    raw = _load_settings(user).get("hiddenActivity")
+    return set(raw) if isinstance(raw, list) else set()
 
 
 @router.get("/me")
@@ -86,6 +105,9 @@ def get_user(
     u = db.query(models.User).filter(models.User.id == user_id).first()
     if not u:
         raise HTTPException(404, "Utilizatorul nu există")
+    # suspendat / dezactivat / blocat → 404 și pe URL direct, nu doar în listări
+    if not visibility.can_see_user(db, u, viewer):
+        raise HTTPException(404, "Utilizatorul nu există")
     # cont privat pe care nu-l urmărești → doar identitatea (nume + username)
     if not serializers.can_view_profile(db, u, viewer):
         return serializers.user_public_limited(db, u, viewer)
@@ -99,7 +121,7 @@ def user_recipes(
     viewer: models.User = Depends(get_current_user_optional),
 ):
     u = db.query(models.User).filter(models.User.id == user_id).first()
-    if not u:
+    if not u or not visibility.can_see_user(db, u, viewer):
         raise HTTPException(404, "Utilizatorul nu există")
     if not serializers.can_view_profile(db, u, viewer):
         return []
@@ -124,11 +146,12 @@ def user_activity(
     """Activitate recentă compusă din: rețete publicate, recenzii scrise și
     preparate gătite-verificate. Respectă confidențialitatea profilului."""
     u = db.query(models.User).filter(models.User.id == user_id).first()
-    if not u:
+    if not u or not visibility.can_see_user(db, u, viewer):
         raise HTTPException(404, "Utilizatorul nu există")
     if not serializers.can_view_profile(db, u, viewer):
         return []
 
+    dismissed = _dismissed_activity(u)
     items = []
 
     authored = (
@@ -139,10 +162,13 @@ def user_activity(
         .all()
     )
     for r in authored:
+        if f"created:{r.id}" in dismissed:
+            continue
         items.append({
             "kind": "created",
             "what": r.title,
             "recipe_id": r.id,
+            "entry_id": r.id,
             "when": r.created_at.isoformat() if r.created_at else None,
         })
 
@@ -154,10 +180,16 @@ def user_activity(
         .all()
     )
     for rv in reviews:
+        # o rețetă ștearsă sau ascunsă nu mai are ce căuta în activitate
+        if rv.recipe is None or rv.recipe.moderation_status != "ok":
+            continue
+        if f"reviewed:{rv.id}" in dismissed:
+            continue
         items.append({
             "kind": "reviewed",
-            "what": rv.recipe.title if rv.recipe else "",
+            "what": rv.recipe.title,
             "recipe_id": rv.recipe_id,
+            "entry_id": rv.id,
             "when": rv.created_at.isoformat() if rv.created_at else None,
         })
 
@@ -172,13 +204,18 @@ def user_activity(
         .limit(10)
         .all()
     )
-    for s in cooked:
-        recipe = db.query(models.Recipe).filter(models.Recipe.id == s.recipe_id).first()
+    for sv in cooked:
+        recipe = db.query(models.Recipe).filter(models.Recipe.id == sv.recipe_id).first()
+        if recipe is None or recipe.moderation_status != "ok":
+            continue
+        if f"cooked:{sv.id}" in dismissed:
+            continue
         items.append({
             "kind": "cooked",
-            "what": recipe.title if recipe else "",
-            "recipe_id": s.recipe_id,
-            "when": s.created_at.isoformat() if s.created_at else None,
+            "what": recipe.title,
+            "recipe_id": sv.recipe_id,
+            "entry_id": sv.id,
+            "when": sv.created_at.isoformat() if sv.created_at else None,
         })
 
     # cele mai noi primele; punem la coadă cele fără dată
@@ -264,7 +301,7 @@ def passport(
 ):
     """Țări distincte din rețetele autorate + rețetele gătite-verificate."""
     u = db.query(models.User).filter(models.User.id == user_id).first()
-    if not u:
+    if not u or not visibility.can_see_user(db, u, viewer):
         raise HTTPException(404, "Utilizatorul nu există")
     if not serializers.can_view_profile(db, u, viewer):
         return {"countries": [], "total": 0}
@@ -272,7 +309,11 @@ def passport(
 
     authored = (
         db.query(models.Recipe.origin)
-        .filter(models.Recipe.author_id == user_id, models.Recipe.origin != "")
+        .filter(
+            models.Recipe.author_id == user_id,
+            models.Recipe.origin != "",
+            models.Recipe.moderation_status == "ok",
+        )
         .all()
     )
     for (origin,) in authored:
@@ -287,6 +328,7 @@ def passport(
             models.SavedRecipe.user_id == user_id,
             models.SavedRecipe.cooked_verified == True,
             models.Recipe.origin != "",
+            models.Recipe.moderation_status == "ok",
         )
         .all()
     )
@@ -297,3 +339,154 @@ def passport(
 
     countries = [{"country": k, "count": v} for k, v in sorted(counts.items())]
     return {"countries": countries, "total": len(countries)}
+
+
+@router.get("/users/{user_id}/passport/{country}")
+def passport_country(
+    user_id: int,
+    country: str,
+    db: Session = Depends(get_db),
+    viewer: models.User = Depends(get_current_user_optional),
+):
+    """Ce anume a adus ștampila: rețetele publicate și cele gătite din țara asta."""
+    u = db.query(models.User).filter(models.User.id == user_id).first()
+    if not u or not visibility.can_see_user(db, u, viewer):
+        raise HTTPException(404, "Utilizatorul nu există")
+    if not serializers.can_view_profile(db, u, viewer):
+        return {"country": country, "recipes": []}
+
+    code = country.strip()
+    items = []
+    seen = set()
+
+    authored = (
+        db.query(models.Recipe)
+        .filter(
+            models.Recipe.author_id == user_id,
+            func.lower(models.Recipe.origin) == code.lower(),
+            models.Recipe.moderation_status == "ok",
+        )
+        .order_by(models.Recipe.created_at.desc())
+        .all()
+    )
+    for r in authored:
+        seen.add(r.id)
+        items.append({**serializers.recipe_to_dict(db, r), "how": "created"})
+
+    cooked = (
+        db.query(models.Recipe, models.SavedRecipe.created_at)
+        .join(models.SavedRecipe, models.SavedRecipe.recipe_id == models.Recipe.id)
+        .filter(
+            models.SavedRecipe.user_id == user_id,
+            models.SavedRecipe.cooked_verified == True,
+            func.lower(models.Recipe.origin) == code.lower(),
+            models.Recipe.moderation_status == "ok",
+        )
+        .order_by(models.SavedRecipe.created_at.desc())
+        .all()
+    )
+    for r, cooked_at in cooked:
+        if r.id in seen:
+            # publicată ȘI gătită de același om — o singură intrare, cea mai tare
+            for item in items:
+                if item["id"] == r.id:
+                    item["how"] = "both"
+                    item["cooked_at"] = cooked_at.isoformat() if cooked_at else None
+            continue
+        seen.add(r.id)
+        items.append({
+            **serializers.recipe_to_dict(db, r),
+            "how": "cooked",
+            "cooked_at": cooked_at.isoformat() if cooked_at else None,
+        })
+
+    return {"country": code, "recipes": items, "total": len(items)}
+
+
+# ---------- activitatea proprie: ascunde / repune ----------
+
+@router.post("/me/activity/hide")
+def hide_activity(
+    data: schemas.ActivityRef,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    prefs = _load_settings(user)
+    hidden = set(prefs.get("hiddenActivity") or [])
+    hidden.add(f"{data.kind}:{data.entry_id}")
+    prefs["hiddenActivity"] = sorted(hidden)
+    user.settings = json.dumps(prefs, ensure_ascii=False)
+    db.commit()
+    return {"hidden": sorted(hidden)}
+
+
+@router.delete("/me/activity/hide")
+def unhide_all_activity(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    prefs = _load_settings(user)
+    prefs["hiddenActivity"] = []
+    user.settings = json.dumps(prefs, ensure_ascii=False)
+    db.commit()
+    return {"hidden": []}
+
+
+# ---------- blocări ----------
+
+@router.get("/me/blocked")
+def list_blocked(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    rows = (
+        db.query(models.User)
+        .join(models.Block, models.Block.blocked_id == models.User.id)
+        .filter(models.Block.blocker_id == user.id)
+        .all()
+    )
+    return [serializers.author_mini(u) for u in rows]
+
+
+@router.post("/users/{user_id}/block", status_code=status.HTTP_201_CREATED)
+def block_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    if user_id == user.id:
+        raise HTTPException(400, "Nu te poți bloca pe tine")
+    target = db.query(models.User).filter(models.User.id == user_id).first()
+    if not target:
+        raise HTTPException(404, "Utilizatorul nu există")
+
+    existing = (
+        db.query(models.Block)
+        .filter(models.Block.blocker_id == user.id, models.Block.blocked_id == user_id)
+        .first()
+    )
+    if not existing:
+        db.add(models.Block(blocker_id=user.id, blocked_id=user_id))
+    # blocarea rupe și legătura de urmărire, în ambele sensuri
+    db.query(models.Follow).filter(
+        or_(
+            and_(models.Follow.follower_id == user.id, models.Follow.following_id == user_id),
+            and_(models.Follow.follower_id == user_id, models.Follow.following_id == user.id),
+        )
+    ).delete(synchronize_session=False)
+    db.commit()
+    return {"blocked": True}
+
+
+@router.delete("/users/{user_id}/block")
+def unblock_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    db.query(models.Block).filter(
+        models.Block.blocker_id == user.id,
+        models.Block.blocked_id == user_id,
+    ).delete()
+    db.commit()
+    return {"blocked": False}

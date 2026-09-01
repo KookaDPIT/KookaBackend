@@ -11,6 +11,7 @@ import schemas
 import serializers
 from database import get_db
 from deps import ROLE_LEVELS, get_current_admin, require_role
+from services import visibility
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -30,6 +31,17 @@ def list_for_moderation(
     return [serializers.recipe_to_dict(db, r, full=True) for r in recipes]
 
 
+def purge_recipe(db: Session, recipe: models.Recipe):
+    """Șterge rețeta ȘI tot ce trimite la ea. Fără asta rămân recenzii și
+    salvări orfane, iar rețeta continuă să apară în activitatea și în pașaportul
+    conturilor care o gătiseră — o fantomă pe care nimeni n-o mai poate deschide."""
+    db.query(models.Review).filter(models.Review.recipe_id == recipe.id).delete()
+    db.query(models.SavedRecipe).filter(models.SavedRecipe.recipe_id == recipe.id).delete()
+    db.query(models.DailyDish).filter(models.DailyDish.recipe_id == recipe.id).delete()
+    db.delete(recipe)
+    db.commit()
+
+
 @router.delete("/recipes/{recipe_id}")
 def delete_recipe(
     recipe_id: int,
@@ -39,8 +51,7 @@ def delete_recipe(
     recipe = db.query(models.Recipe).filter(models.Recipe.id == recipe_id).first()
     if not recipe:
         raise HTTPException(404, "Rețeta nu există")
-    db.delete(recipe)
-    db.commit()
+    purge_recipe(db, recipe)
     return {"deleted": True}
 
 
@@ -56,6 +67,103 @@ def hide_recipe(
     recipe.moderation_status = "hidden"
     db.commit()
     return {"hidden": True}
+
+
+@router.post("/recipes/{recipe_id}/restore")
+def restore_recipe(
+    recipe_id: int,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    """Repune o rețetă ascunsă înapoi în circulație."""
+    recipe = db.query(models.Recipe).filter(models.Recipe.id == recipe_id).first()
+    if not recipe:
+        raise HTTPException(404, "Rețeta nu există")
+    recipe.moderation_status = "ok"
+    db.commit()
+    return {"restored": True}
+
+
+# ==========================================================================
+#  MODERAREA FORUMULUI — aceleași unelte ca la rețete
+# ==========================================================================
+
+@router.get("/forum/posts")
+def list_forum_for_moderation(
+    status_filter: str = Query("ok", alias="status"),
+    q: str = Query(""),
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    query = db.query(models.ForumPost).filter(
+        models.ForumPost.moderation_status == status_filter
+    )
+    term = q.strip()
+    if term:
+        if term.lstrip("#").isdigit():
+            query = query.filter(models.ForumPost.id == int(term.lstrip("#")))
+        else:
+            query = query.filter(func.lower(models.ForumPost.title).like(f"%{term.lower()}%"))
+
+    posts = query.order_by(models.ForumPost.created_at.desc()).limit(100).all()
+    return [
+        {
+            "id": p.id,
+            "title": p.title,
+            "excerpt": (p.body or "")[:160],
+            "language": p.language or "en",
+            "tag": p.tag or "question",
+            "votes": p.votes or 0,
+            "moderation_status": p.moderation_status or "ok",
+            "author": serializers.author_mini(p.author),
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+        }
+        for p in posts
+    ]
+
+
+@router.post("/forum/posts/{post_id}/hide")
+def hide_forum_post(
+    post_id: int,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    post = db.query(models.ForumPost).filter(models.ForumPost.id == post_id).first()
+    if not post:
+        raise HTTPException(404, "Postarea nu există")
+    post.moderation_status = "hidden"
+    db.commit()
+    return {"hidden": True}
+
+
+@router.post("/forum/posts/{post_id}/restore")
+def restore_forum_post(
+    post_id: int,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    post = db.query(models.ForumPost).filter(models.ForumPost.id == post_id).first()
+    if not post:
+        raise HTTPException(404, "Postarea nu există")
+    post.moderation_status = "ok"
+    db.commit()
+    return {"restored": True}
+
+
+@router.delete("/forum/posts/{post_id}")
+def delete_forum_post(
+    post_id: int,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    post = db.query(models.ForumPost).filter(models.ForumPost.id == post_id).first()
+    if not post:
+        raise HTTPException(404, "Postarea nu există")
+    db.query(models.ForumComment).filter(models.ForumComment.post_id == post_id).delete()
+    db.query(models.ForumVote).filter(models.ForumVote.post_id == post_id).delete()
+    db.delete(post)
+    db.commit()
+    return {"deleted": True}
 
 
 @router.post("/users/{user_id}/deactivate")
@@ -180,7 +288,7 @@ def suspend_user(
     if ROLE_LEVELS.get(u.role, 0) >= ROLE_LEVELS.get(admin.role, 0):
         raise HTTPException(403, "Nu poți suspenda un cont cu rol egal sau superior")
 
-    u.suspended_until = datetime.utcnow() + timedelta(days=data.days)
+    u.suspended_until = datetime.utcnow() + timedelta(hours=data.hours or (data.days * 24))
     db.commit()
     db.refresh(u)
     return _admin_user_dict(u)

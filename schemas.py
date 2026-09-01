@@ -84,7 +84,10 @@ class RoleUpdate(BaseModel):
 
 
 class SuspendRequest(BaseModel):
-    days: int = Field(default=7, ge=1, le=365)
+    """Durata se dă în ore, ca să fie posibile și sancțiunile scurte (o zi,
+    câteva ore). `days` rămâne pentru compatibilitate cu apelurile vechi."""
+    days: int = Field(default=7, ge=1, le=3650)
+    hours: Optional[int] = Field(default=None, ge=1, le=87600)
 
 
 # ---------- FORUM ----------
@@ -109,3 +112,12 @@ class ForumVoteIn(BaseModel):
 class ForumCommentCreate(BaseModel):
     body: str
     parent_id: Optional[int] = None
+
+
+class ActivityRef(BaseModel):
+    kind: str          # created | reviewed | cooked
+    entry_id: int
+
+
+class ModerationAction(BaseModel):
+    action: str        # hide | restore
