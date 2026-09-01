@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 import models
 import schemas
 import serializers
+from serializers import iso_utc
 from database import get_db
 from deps import ROLE_LEVELS, get_current_admin, require_role
 from services import visibility
@@ -116,7 +117,7 @@ def list_forum_for_moderation(
             "votes": p.votes or 0,
             "moderation_status": p.moderation_status or "ok",
             "author": serializers.author_mini(p.author),
-            "created_at": p.created_at.isoformat() if p.created_at else None,
+            "created_at": iso_utc(p.created_at),
         }
         for p in posts
     ]
@@ -216,9 +217,9 @@ def _admin_user_dict(u: models.User):
         "role": u.role or "user",
         "is_active": bool(u.is_active),
         "suspended": suspended,
-        "suspended_until": u.suspended_until.isoformat() if u.suspended_until else None,
+        "suspended_until": iso_utc(u.suspended_until),
         "level": u.level,
-        "created_at": u.created_at.isoformat() if u.created_at else None,
+        "created_at": iso_utc(u.created_at),
     }
 
 

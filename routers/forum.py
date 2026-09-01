@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 import models
 import schemas
 import serializers
+from serializers import iso_utc
 from database import get_db
 from deps import (
     ROLE_LEVELS,
@@ -162,7 +163,7 @@ def _post_to_dict(post, comments=0, my_vote=0, with_body=False):
         "comment_count": comments,
         "my_vote": my_vote,
         "author": serializers.author_mini(post.author),
-        "created_at": post.created_at.isoformat() if post.created_at else None,
+        "created_at": iso_utc(post.created_at),
     }
     # în listă trimitem doar un fragment: tile-urile afișează cel mult 2-3 rânduri
     body = post.body or ""
@@ -178,7 +179,7 @@ def _comment_to_dict(c, viewer=None):
         "body": c.body or "",
         "parent_id": c.parent_id,
         "author": serializers.author_mini(c.author),
-        "created_at": c.created_at.isoformat() if c.created_at else None,
+        "created_at": iso_utc(c.created_at),
         "is_mine": viewer is not None and c.author_id == viewer.id,
     }
 

@@ -4,10 +4,28 @@ Aici se face deserializarea câmpurilor text-JSON (ingredients, steps,
 nutrition, allergens, images) și calculul câmpurilor derivate (rating mediu,
 număr recenzii, urmăritori)."""
 import json
+from datetime import datetime, timezone
+
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import models
+
+
+def iso_utc(dt):
+    """ISO cu marcaj de fus orar.
+
+    Toate datele din DB sunt scrise cu `datetime.utcnow()`, deci sunt UTC — dar
+    naive. `isoformat()` pe ele produce „2026-09-02T11:43:12", fără marcaj, iar
+    `new Date(...)` din browser citește un asemenea șir ca oră LOCALĂ. Pe o
+    mașină la UTC+3 fiecare oră afișată ieșea cu 3 ore greșită: o rețetă publicată
+    acum apărea „acum 3 ore", iar o suspendare de 24h arăta 21.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
 
 
 def _load_json(raw, default):
@@ -62,7 +80,7 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False):
         "moderation_status": r.moderation_status,
         "is_daily_dish": r.is_daily_dish,
         "author": author_mini(r.author),
-        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "created_at": iso_utc(r.created_at),
         "avg_rating": avg,
         "review_count": count,
         "saves": saves,
@@ -134,7 +152,7 @@ def user_to_dict(db: Session, u: "models.User", viewer: "models.User" = None):
         "is_following": is_following,
         "is_self": is_self,
         "private": is_private,
-        "created_at": u.created_at.isoformat() if u.created_at else None,
+        "created_at": iso_utc(u.created_at),
     }
     # preferințele de cont sunt private — le trimitem doar posesorului
     if is_self:
@@ -142,6 +160,14 @@ def user_to_dict(db: Session, u: "models.User", viewer: "models.User" = None):
         data["language"] = u.language or "ro"
         data["units"] = u.units or "metric"
         data["settings"] = _load_json(getattr(u, "settings", ""), {})
+        # Starea de sancțiune trebuie să ajungă la posesor, altfel interfața n-are
+        # cum să-i spună de ce nu mai poate face nimic: în DB scria „suspendat",
+        # dar /me nu raporta asta, așa că frontend-ul îl trata ca pe oricine.
+        until = getattr(u, "suspended_until", None)
+        suspended = bool(until and until > datetime.utcnow())
+        data["suspended"] = suspended
+        data["suspended_until"] = iso_utc(until) if suspended else None
+        data["is_active"] = bool(u.is_active)
     return data
 
 
@@ -198,7 +224,7 @@ def review_to_dict(db: Session, rv: "models.Review", viewer: "models.User" = Non
         "photo_url": rv.photo_url or "",
         "recipe_id": rv.recipe_id,
         "user": author_mini(rv.user),
-        "created_at": rv.created_at.isoformat() if rv.created_at else None,
+        "created_at": iso_utc(rv.created_at),
         "is_mine": viewer is not None and rv.user_id == viewer.id,
     }
     if with_recipe:

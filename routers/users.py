@@ -9,6 +9,7 @@ import auth
 import models
 import schemas
 import serializers
+from serializers import iso_utc
 from database import get_db
 from deps import get_current_user, get_current_user_optional
 from services import visibility
@@ -169,7 +170,7 @@ def user_activity(
             "what": r.title,
             "recipe_id": r.id,
             "entry_id": r.id,
-            "when": r.created_at.isoformat() if r.created_at else None,
+            "when": iso_utc(r.created_at),
         })
 
     reviews = (
@@ -190,7 +191,7 @@ def user_activity(
             "what": rv.recipe.title,
             "recipe_id": rv.recipe_id,
             "entry_id": rv.id,
-            "when": rv.created_at.isoformat() if rv.created_at else None,
+            "when": iso_utc(rv.created_at),
         })
 
     cooked = (
@@ -215,7 +216,7 @@ def user_activity(
             "what": recipe.title,
             "recipe_id": sv.recipe_id,
             "entry_id": sv.id,
-            "when": sv.created_at.isoformat() if sv.created_at else None,
+            "when": iso_utc(sv.created_at),
         })
 
     # cele mai noi primele; punem la coadă cele fără dată
@@ -391,13 +392,13 @@ def passport_country(
             for item in items:
                 if item["id"] == r.id:
                     item["how"] = "both"
-                    item["cooked_at"] = cooked_at.isoformat() if cooked_at else None
+                    item["cooked_at"] = iso_utc(cooked_at)
             continue
         seen.add(r.id)
         items.append({
             **serializers.recipe_to_dict(db, r),
             "how": "cooked",
-            "cooked_at": cooked_at.isoformat() if cooked_at else None,
+            "cooked_at": iso_utc(cooked_at),
         })
 
     return {"country": code, "recipes": items, "total": len(items)}
