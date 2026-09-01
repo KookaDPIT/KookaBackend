@@ -30,6 +30,9 @@ _MIGRATIONS = [
     "ALTER TABLE saved_recipes ADD COLUMN IF NOT EXISTS cooked_verified BOOLEAN DEFAULT FALSE",
     "ALTER TABLE saved_recipes ADD COLUMN IF NOT EXISTS cook_photo_url VARCHAR DEFAULT ''",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_until TIMESTAMP",
+    "ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS language VARCHAR DEFAULT 'en'",
+    "ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS tag VARCHAR DEFAULT 'question'",
+    "ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS views INTEGER DEFAULT 0",
 ]
 # Rulăm fiecare migrare izolat: o coloană care există deja (sau un dialect care
 # nu suportă IF NOT EXISTS, ex. SQLite local) nu trebuie să blocheze pornirea.
@@ -54,7 +57,7 @@ app.add_middleware(
 )
 
 # ---------- Routere pe feature ----------
-from routers import recipes, reviews, users, search, daily, uploads, admin
+from routers import recipes, reviews, users, search, daily, uploads, admin, forum
 
 app.include_router(recipes.router)
 app.include_router(reviews.router)
@@ -63,6 +66,7 @@ app.include_router(search.router)
 app.include_router(daily.router)
 app.include_router(uploads.router)
 app.include_router(admin.router)
+app.include_router(forum.router)
 
 
 @app.get("/health")

@@ -85,3 +85,27 @@ class RoleUpdate(BaseModel):
 
 class SuspendRequest(BaseModel):
     days: int = Field(default=7, ge=1, le=365)
+
+
+# ---------- FORUM ----------
+class ForumPostCreate(BaseModel):
+    title: str
+    body: str = ""
+    language: str = "en"     # subforumul
+    tag: str = "question"    # subiectul
+
+
+class ForumPostUpdate(BaseModel):
+    title: Optional[str] = None
+    body: Optional[str] = None
+    language: Optional[str] = None
+    tag: Optional[str] = None
+
+
+class ForumVoteIn(BaseModel):
+    value: int = Field(ge=-1, le=1)   # 1 up, -1 down, 0 retrage votul
+
+
+class ForumCommentCreate(BaseModel):
+    body: str
+    parent_id: Optional[int] = None

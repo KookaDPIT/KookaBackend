@@ -111,13 +111,32 @@ class ForumPost(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, nullable=False)
     body = Column(Text, default="")
-    category = Column(String, default="Questions")  # Questions/Recipes/Tips/Showcase
-    votes = Column(Integer, default=0)
+    category = Column(String, default="Questions")  # istoric — înlocuit de `tag`
+    # Subforumul e limba în care scrii; subiectul îl dă tag-ul.
+    language = Column(String, default="en", index=True)
+    tag = Column(String, default="question", index=True)
+    votes = Column(Integer, default=0)      # sumă cache-uită a ForumVote
+    views = Column(Integer, default=0)
     author_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
 
     author = relationship("User", back_populates="posts")
     comments = relationship("ForumComment", back_populates="post")
+
+
+class ForumVote(Base):
+    """Un vot per user per postare (+1 / -1). Contorul `ForumPost.votes` e doar
+    o sumă cache-uită — aici e adevărul, ca să știm și cum a votat cel care
+    se uită la listă."""
+    __tablename__ = "forum_votes"
+    __table_args__ = (
+        UniqueConstraint("user_id", "post_id", name="uq_forum_vote"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    post_id = Column(Integer, ForeignKey("forum_posts.id"), index=True)
+    value = Column(Integer, default=0)      # 1 sau -1
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 class ForumComment(Base):
     __tablename__ = "forum_comments"
@@ -130,6 +149,7 @@ class ForumComment(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     post = relationship("ForumPost", back_populates="comments")
+    author = relationship("User")
 
 # ---------- BADGES (Secțiunea 5) ----------
 class Badge(Base):
