@@ -76,3 +76,12 @@ class ProfileUpdate(BaseModel):
 class PasswordChange(BaseModel):
     current_password: str
     new_password: str = Field(min_length=6, max_length=72)
+
+
+# ---------- MODERARE / ROLURI ----------
+class RoleUpdate(BaseModel):
+    role: str   # user / moderator / admin
+
+
+class SuspendRequest(BaseModel):
+    days: int = Field(default=7, ge=1, le=365)

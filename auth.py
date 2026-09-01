@@ -20,14 +20,17 @@ def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain_bytes, hashed.encode("utf-8"))
 
 # --- token-uri ---
-def create_token(user_id: int) -> str:
+def create_token(user_id: int, role: str = "user") -> str:
+    """Token-ul poartă și rolul, ca fronted-ul să poată ascunde uneltele de
+    moderare fără un request în plus. Sursa de adevăr rămâne coloana din DB —
+    dependințele de rol (deps.require_role) recitesc mereu userul."""
     expire = datetime.utcnow() + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
-    payload = {"sub": str(user_id), "exp": expire}
+    payload = {"sub": str(user_id), "role": role or "user", "exp": expire}
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 def decode_token(token: str):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         return int(payload.get("sub"))
-    except JWTError:
+    except (JWTError, TypeError, ValueError):
         return None

@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
 from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, func
 from pydantic import BaseModel, EmailStr
 from database import get_db
 import auth
@@ -83,7 +83,11 @@ class ForgotPasswordRequest(BaseModel):
 
 @app.post("/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.email == data.email).first()
+    # emailurile se stochează lowercase la înregistrare — căutăm la fel, ca un
+    # login scris cu majuscule să nu pice degeaba
+    user = db.query(models.User).filter(
+        func.lower(models.User.email) == data.email.strip().lower()
+    ).first()
 
     if not user or not auth.verify_password(data.password, user.hashed_password):
         raise HTTPException(
@@ -105,12 +109,50 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
 
 @app.post("/forgot-password")
 def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.email == data.email).first()
+    user = db.query(models.User).filter(
+        func.lower(models.User.email) == data.email.strip().lower()
+    ).first()
 
     if not user:
         return {"exists": False, "message": "Nu există niciun cont cu acest email"}
 
     return {"exists": True, "message": "Emailul este corect, contul există"}
+
+# ---------- Disponibilitate username / email ----------
+
+def _username_taken(db: Session, username: str) -> bool:
+    """Comparație case-insensitive: `Alex` și `alex` sunt același handle."""
+    if not username:
+        return False
+    return db.query(models.User).filter(
+        func.lower(models.User.username) == username.strip().lstrip("@").lower()
+    ).first() is not None
+
+
+def _email_taken(db: Session, email: str) -> bool:
+    if not email:
+        return False
+    return db.query(models.User).filter(
+        func.lower(models.User.email) == email.strip().lower()
+    ).first() is not None
+
+
+@app.get("/auth/availability")
+def check_availability(
+    username: str = "",
+    email: str = "",
+    db: Session = Depends(get_db),
+):
+    """Verificare live folosită de formularul de înregistrare, ca userul să afle
+    că handle-ul/emailul e ocupat înainte de a apăsa "Creează cont".
+    Întoarce doar booleeni — nu confirmă niciodată cui aparține contul."""
+    result = {}
+    if username.strip():
+        result["username_taken"] = _username_taken(db, username)
+    if email.strip():
+        result["email_taken"] = _email_taken(db, email)
+    return result
+
 
 # ---------- Schema pentru datele de înregistrare ----------
 
@@ -132,20 +174,32 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
             detail="Parolele nu coincid"
         )
 
-    existing_user = db.query(models.User).filter(
-        (models.User.email == data.email) | (models.User.username == data.username)
-    ).first()
+    username = data.username.strip().lstrip("@")
+    email = data.email.strip().lower()
 
-    if existing_user:
+    if not username:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Există deja un cont cu acest email sau username"
+            detail="Numele de utilizator nu poate fi gol"
+        )
+
+    # Verificări separate, ca frontend-ul să știe exact ce câmp e ocupat.
+    if _username_taken(db, username):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Acest nume de utilizator este deja folosit"
+        )
+
+    if _email_taken(db, email):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Există deja un cont cu acest email"
         )
 
     new_user = models.User(
         full_name=data.full_name,
-        email=data.email,
-        username=data.username,
+        email=email,
+        username=username,
         hashed_password=auth.hash_password(data.password)
     )
     db.add(new_user)

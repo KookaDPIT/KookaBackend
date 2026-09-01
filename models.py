@@ -27,6 +27,7 @@ class User(Base):
     settings = Column(Text, default="")            # JSON: preferințe client (privacy, notificări, mesaje, 2FA, blocked)
     is_active = Column(Boolean, default=True)      # dezactivat de moderator/admin
     role = Column(String, default="user")          # user / moderator / admin
+    suspended_until = Column(DateTime, nullable=True)  # sancțiune temporară (deps.require_not_suspended)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     recipes = relationship("Recipe", back_populates="author")
