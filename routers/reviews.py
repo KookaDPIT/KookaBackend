@@ -3,6 +3,7 @@
 Regula: poți lăsa recenzie doar după ce ai marcat rețeta ca gătită ȘI AI-ul a
 confirmat poza (cooked_verified). Îți poți edita/șterge propria recenzie."""
 import base64
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
@@ -12,7 +13,7 @@ import schemas
 import serializers
 from database import get_db
 from deps import get_current_user, get_current_user_optional
-from services import ai
+from services import ai, challenges, learn
 
 router = APIRouter(tags=["reviews"])
 
@@ -62,15 +63,55 @@ async def verify_cook(
     saved.cook_photo_url = ""  # dovada NU se păstrează
     saved.cooked_verified = bool(result["verified"])
 
-    if result["verified"]:
-        user.xp_total = (user.xp_total or 0) + 20  # XP pentru gătit
-
-    db.commit()
-    return {
+    response = {
         "verified": bool(result["verified"]),
         "reason": result["reason"],
         "can_review": bool(result["verified"]),
     }
+
+    if result["verified"]:
+        saved.cooked_at = datetime.utcnow()
+        gained = 20  # XP de bază pentru gătit
+
+        # O gătire confirmată poate încheia o provocare a zilei…
+        challenge = challenges.complete_for_recipe(db, user, recipe_id)
+        if challenge is not None:
+            gained += challenge.xp
+            response["challenge_completed"] = {"id": challenge.id, "xp": challenge.xp}
+
+        # …și poate acorda mastery pe lecțiile unde quiz-ul avansat e deja
+        # trecut și lipsea doar dovada practică.
+        pending = (
+            db.query(models.LessonProgress)
+            .filter(
+                models.LessonProgress.user_id == user.id,
+                models.LessonProgress.mastery_passed.is_(True),
+                models.LessonProgress.mastered.is_(False),
+                models.LessonProgress.completed.is_(True),
+            )
+            .all()
+        )
+        mastered_now = []
+        for progress in pending:
+            # Dovada trebuie să fie ulterioară terminării lecției.
+            if progress.completed_at and saved.cooked_at < progress.completed_at:
+                continue
+            lesson = db.query(models.Lesson).filter(
+                models.Lesson.id == progress.lesson_id
+            ).first()
+            if lesson is None:
+                continue
+            progress.mastered = True
+            progress.mastered_at = saved.cooked_at
+            gained += lesson.mastery_xp or 0
+            mastered_now.append(lesson.title)
+        if mastered_now:
+            response["mastered"] = mastered_now
+
+        response.update(learn.award_xp(user, gained))
+
+    db.commit()
+    return response
 
 
 @router.get("/reviews/recent")

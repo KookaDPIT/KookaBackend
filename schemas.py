@@ -21,6 +21,7 @@ class RecipeCreate(BaseModel):
     servings: int = 1
     duration_min: int = 0
     difficulty: str = "easy"
+    rank: str = ""                         # copper..chef; gol -> derivat din difficulty
     ingredients: List[str] = Field(default_factory=list)
     steps: List[StepIn] = Field(default_factory=list)
     image_url: str = ""                    # cover (deja urcat pe ImageKit)
@@ -34,6 +35,7 @@ class RecipeUpdate(BaseModel):
     servings: Optional[int] = None
     duration_min: Optional[int] = None
     difficulty: Optional[str] = None
+    rank: Optional[str] = None
     ingredients: Optional[List[str]] = None
     steps: Optional[List[StepIn]] = None
     image_url: Optional[str] = None
@@ -121,3 +123,33 @@ class ActivityRef(BaseModel):
 
 class ModerationAction(BaseModel):
     action: str        # hide | restore
+
+
+# ---------- LEARN ----------
+class QuizSubmit(BaseModel):
+    """Indexul opțiunii alese pentru fiecare întrebare, în ordine. `None`
+    înseamnă „fără răspuns" și se punctează ca greșit."""
+    answers: List[Optional[int]] = Field(default_factory=list)
+
+
+class QuizQuestion(BaseModel):
+    q: str
+    options: List[str]
+    correct: int = Field(ge=0)
+
+
+class LessonAdminUpdate(BaseModel):
+    """Editarea unei lecții din consola de administrare. Orice câmp trimis
+    marchează lecția drept `custom`, ca seed-ul de la pornire să n-o rescrie."""
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    intro: Optional[str] = None
+    icon: Optional[str] = None
+    video_url: Optional[str] = None
+    est_min: Optional[int] = Field(default=None, ge=1, le=600)
+    req_tier: Optional[int] = Field(default=None, ge=0, le=15)
+    steps: Optional[List[str]] = None
+    tips: Optional[List[str]] = None
+    quiz: Optional[List[QuizQuestion]] = None
+    mastery_quiz: Optional[List[QuizQuestion]] = None
+    prereqs: Optional[List[str]] = None

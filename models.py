@@ -49,6 +49,9 @@ class Recipe(Base):
     duration_min = Column(Integer, default=0)
     difficulty = Column(String, default="easy")
     calories = Column(Integer, default=0)
+    # Rank-ul rețetei (copper..chef, fără divizii). Înlocuiește easy/medium/hard
+    # ca dificultate afișată; `difficulty` rămâne pentru compatibilitate.
+    rank = Column(String, default="copper")
     image_url = Column(String, default="")        # poză cover (ImageKit)
     images = Column(Text, default="")             # JSON: listă URL-uri galerie
     moderation_status = Column(String, default="ok")  # ok / flagged / hidden
@@ -84,26 +87,92 @@ class SavedRecipe(Base):
     cooked = Column(Boolean, default=False)       # gătită sau doar salvată
     cooked_verified = Column(Boolean, default=False)  # AI a confirmat poza de gătit
     cook_photo_url = Column(String, default="")   # dovada gătitului (ImageKit)
+    cooked_at = Column(DateTime, nullable=True)   # când a fost confirmat gătitul
     created_at = Column(DateTime, default=datetime.utcnow)
 
 # ---------- LEARN (Secțiunea 3) ----------
 class Lesson(Base):
+    """Un hexagon din fagure. Conținutul vine din `data/lessons_seed.py` și e
+    re-scris la fiecare pornire (vezi services.learn.seed_lessons), așa că DB-ul
+    e sursa pentru citire, dar fișierul de seed rămâne sursa adevărului —
+    excepție fac lecțiile editate din /admin, marcate cu `custom=True`."""
     __tablename__ = "lessons"
     id = Column(Integer, primary_key=True, index=True)
+    slug = Column(String, unique=True, index=True)
     title = Column(String, nullable=False)
-    video_url = Column(String, default="")
-    content = Column(Text, default="")
-    level = Column(String, default="beginner")    # beginner -> master_chef
-    order = Column(Integer, default=0)            # poziția în skill tree
+    branch = Column(String, default="", index=True)   # id-ul ramurii; "root" pentru Foundations
+    icon = Column(String, default="")
+    video_url = Column(String, default="")            # gol la seed — se completează din /admin
+    summary = Column(Text, default="")
+    content = Column(Text, default="")                # intro (text lung)
+    steps = Column(Text, default="")                  # JSON: listă de pași
+    tips = Column(Text, default="")                   # JSON: listă de sfaturi
+    quiz = Column(Text, default="")                   # JSON: [{q, options[], correct}]
+    mastery_quiz = Column(Text, default="")           # JSON: același format, mai greu
+    prereqs = Column(Text, default="")                # JSON: listă de slug-uri
+    req_tier = Column(Integer, default=0)             # treapta minimă de rank (0..15)
+    est_min = Column(Integer, default=20)
+    xp = Column(Integer, default=0)                   # XP la trecerea quiz-ului
+    mastery_xp = Column(Integer, default=0)           # XP suplimentar la mastery
+    hex_q = Column(Integer, default=0)                # coordonate axiale în fagure
+    hex_r = Column(Integer, default=0)
+    depth = Column(Integer, default=0)                # poziția în ramură (0 = rădăcină)
+    level = Column(String, default="beginner")        # istoric — înlocuit de req_tier
+    order = Column(Integer, default=0)
+    custom = Column(Boolean, default=False)           # editată din /admin -> seed-ul n-o suprascrie
+
 
 class LessonProgress(Base):
+    """Progresul unui user pe o lecție. Are două niveluri: `completed` (quiz-ul
+    de bază trecut) și `mastered`, care cere și quiz-ul avansat, și o rețetă
+    gătită confirmată de AI după terminarea lecției."""
     __tablename__ = "lesson_progress"
+    __table_args__ = (
+        UniqueConstraint("user_id", "lesson_id", name="uq_lesson_progress"),
+    )
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    lesson_id = Column(Integer, ForeignKey("lessons.id"))
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    lesson_id = Column(Integer, ForeignKey("lessons.id"), index=True)
     completed = Column(Boolean, default=False)
     quiz_score = Column(Integer, default=0)
     completed_at = Column(DateTime, nullable=True)
+    mastery_passed = Column(Boolean, default=False)   # quiz-ul avansat trecut
+    mastered = Column(Boolean, default=False)         # quiz avansat + dish gătit
+    mastered_at = Column(DateTime, nullable=True)
+    attempts = Column(Integer, default=0)
+    mastery_attempts = Column(Integer, default=0)
+    # Cooldown-ul de 24h după un quiz ratat stă în DB, nu în localStorage: altfel
+    # se ocolea golind stocarea browserului.
+    cooldown_until = Column(DateTime, nullable=True)
+    mastery_cooldown_until = Column(DateTime, nullable=True)
+
+
+class DailyChallenge(Base):
+    """Provocările zilei — 3 rețete alese determinist pentru data respectivă.
+    Se completează gătind rețeta și trecând verificarea AI a pozei."""
+    __tablename__ = "daily_challenges"
+    __table_args__ = (
+        UniqueConstraint("date", "slot", name="uq_daily_challenge_slot"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(String, index=True)                 # YYYY-MM-DD (UTC)
+    slot = Column(Integer, default=0)                 # 0 = easy, 1 = medium, 2 = hard
+    recipe_id = Column(Integer, ForeignKey("recipes.id"))
+    rank = Column(String, default="copper")           # rank-ul rețetei, pentru insignă
+    xp = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class DailyChallengeDone(Base):
+    __tablename__ = "daily_challenge_done"
+    __table_args__ = (
+        UniqueConstraint("user_id", "challenge_id", name="uq_daily_challenge_done"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    challenge_id = Column(Integer, ForeignKey("daily_challenges.id"), index=True)
+    xp_awarded = Column(Integer, default=0)
+    completed_at = Column(DateTime, default=datetime.utcnow)
 
 # ---------- FORUM (Secțiunea 4) ----------
 class ForumPost(Base):

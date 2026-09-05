@@ -10,7 +10,7 @@ import schemas
 import serializers
 from database import get_db
 from deps import get_current_user, get_current_user_optional
-from services import ai, visibility
+from services import ai, ranks, visibility
 
 router = APIRouter(prefix="/recipes", tags=["recipes"])
 
@@ -52,6 +52,7 @@ def create_recipe(
         servings=data.servings,
         duration_min=data.duration_min,
         difficulty=data.difficulty,
+        rank=ranks.normalize_recipe_rank(data.rank, data.difficulty),
         ingredients=json.dumps(data.ingredients, ensure_ascii=False),
         steps=json.dumps(steps, ensure_ascii=False),
         nutrition=json.dumps(analysis["nutrition"], ensure_ascii=False),
@@ -111,7 +112,7 @@ def list_recipes(
         query = query.order_by(models.Recipe.created_at.desc())
 
     recipes = query.offset(offset).limit(limit).all()
-    return [serializers.recipe_to_dict(db, r) for r in recipes]
+    return [serializers.recipe_to_dict(db, r, viewer=viewer) for r in recipes]
 
 
 @router.get("/{recipe_id}")
@@ -133,7 +134,29 @@ def get_recipe(
     if recipe.author_id in visibility.hidden_author_ids(db, viewer):
         raise HTTPException(404, "Rețeta nu există")
 
-    data = serializers.recipe_to_dict(db, recipe, full=True)
+    # Rank gating: rețetele peste rank-ul tău nu se deschid. Autorul și echipa
+    # de moderare trec întotdeauna — altfel nu și-ar putea vedea propria rețetă.
+    recipe_rank = ranks.normalize_recipe_rank(recipe.rank, recipe.difficulty)
+    if not (staff or mine) and not ranks.can_access_recipe(
+        viewer.xp_total if viewer else 0, recipe_rank
+    ):
+        required = ranks.RANK_BY_ID.get(recipe_rank, {}).get("name", recipe_rank)
+        raise HTTPException(
+            403,
+            {
+                "message": f"Rețeta cere rank-ul {required}.",
+                "required_rank": recipe_rank,
+                "required_rank_name": required,
+                "your_rank": ranks.progress_for_xp(viewer.xp_total if viewer else 0),
+                "recipe": {
+                    "id": recipe.id,
+                    "title": recipe.title,
+                    "image_url": recipe.image_url or "",
+                },
+            },
+        )
+
+    data = serializers.recipe_to_dict(db, recipe, full=True, viewer=viewer)
     data["can_moderate"] = staff
     data["is_hidden"] = recipe.moderation_status == "hidden"
     return data
@@ -157,6 +180,12 @@ def update_recipe(
     for field in ("title", "description", "origin", "servings", "duration_min", "difficulty"):
         if field in payload:
             setattr(recipe, field, payload[field])
+    # Rank-ul se normalizează întotdeauna: o valoare invalidă cade pe maparea
+    # din dificultate, în loc să scrie gunoi în coloană.
+    if "rank" in payload or "difficulty" in payload:
+        recipe.rank = ranks.normalize_recipe_rank(
+            payload.get("rank", recipe.rank), recipe.difficulty
+        )
     if "image_url" in payload:
         recipe.image_url = payload["image_url"]
     if "images" in payload:

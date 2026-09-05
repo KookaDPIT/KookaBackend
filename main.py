@@ -35,6 +35,38 @@ _MIGRATIONS = [
     "ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS tag VARCHAR DEFAULT 'question'",
     "ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS views INTEGER DEFAULT 0",
     "ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS moderation_status VARCHAR DEFAULT 'ok'",
+    # ---- Learn: fagurele de lecții + rank-uri ----
+    "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS rank VARCHAR DEFAULT 'copper'",
+    "ALTER TABLE saved_recipes ADD COLUMN IF NOT EXISTS cooked_at TIMESTAMP",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS slug VARCHAR",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS branch VARCHAR DEFAULT ''",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS icon VARCHAR DEFAULT ''",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS summary TEXT DEFAULT ''",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS steps TEXT DEFAULT ''",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS tips TEXT DEFAULT ''",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS quiz TEXT DEFAULT ''",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS mastery_quiz TEXT DEFAULT ''",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS prereqs TEXT DEFAULT ''",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS req_tier INTEGER DEFAULT 0",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS est_min INTEGER DEFAULT 20",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS xp INTEGER DEFAULT 0",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS mastery_xp INTEGER DEFAULT 0",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS hex_q INTEGER DEFAULT 0",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS hex_r INTEGER DEFAULT 0",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS depth INTEGER DEFAULT 0",
+    "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS custom BOOLEAN DEFAULT FALSE",
+    "ALTER TABLE lesson_progress ADD COLUMN IF NOT EXISTS mastery_passed BOOLEAN DEFAULT FALSE",
+    "ALTER TABLE lesson_progress ADD COLUMN IF NOT EXISTS mastered BOOLEAN DEFAULT FALSE",
+    "ALTER TABLE lesson_progress ADD COLUMN IF NOT EXISTS mastered_at TIMESTAMP",
+    "ALTER TABLE lesson_progress ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 0",
+    "ALTER TABLE lesson_progress ADD COLUMN IF NOT EXISTS mastery_attempts INTEGER DEFAULT 0",
+    "ALTER TABLE lesson_progress ADD COLUMN IF NOT EXISTS cooldown_until TIMESTAMP",
+    "ALTER TABLE lesson_progress ADD COLUMN IF NOT EXISTS mastery_cooldown_until TIMESTAMP",
+    # Rețetele existente au doar easy/medium/hard — le mapăm o singură dată.
+    "UPDATE recipes SET rank = 'copper'   WHERE (rank IS NULL OR rank = '') AND difficulty = 'easy'",
+    "UPDATE recipes SET rank = 'silver'   WHERE (rank IS NULL OR rank = '') AND difficulty = 'medium'",
+    "UPDATE recipes SET rank = 'platinum' WHERE (rank IS NULL OR rank = '') AND difficulty = 'hard'",
+    "UPDATE recipes SET rank = 'copper'   WHERE rank IS NULL OR rank = ''",
 ]
 # Rulăm fiecare migrare izolat: o coloană care există deja (sau un dialect care
 # nu suportă IF NOT EXISTS, ex. SQLite local) nu trebuie să blocheze pornirea.
@@ -59,8 +91,9 @@ app.add_middleware(
 )
 
 # ---------- Routere pe feature ----------
-from routers import recipes, reviews, users, search, daily, uploads, admin, forum
+from routers import recipes, reviews, users, search, daily, uploads, admin, forum, learn
 
+app.include_router(learn.router)
 app.include_router(recipes.router)
 app.include_router(reviews.router)
 app.include_router(users.router)
@@ -69,6 +102,21 @@ app.include_router(daily.router)
 app.include_router(uploads.router)
 app.include_router(admin.router)
 app.include_router(forum.router)
+
+# Cele 50 de lecții vin din `data/lessons_seed.py` și se rescriu la fiecare
+# pornire, ca modificările de conținut să ajungă în DB fără migrare manuală.
+# Lecțiile editate din /admin sunt marcate `custom` și rămân neatinse.
+try:
+    from database import SessionLocal
+    from services import learn as learn_service
+
+    _seed_db = SessionLocal()
+    try:
+        learn_service.seed_lessons(_seed_db)
+    finally:
+        _seed_db.close()
+except Exception as exc:  # pornirea nu trebuie blocată de seed
+    print(f"[learn] seed sărit: {exc}")
 
 
 @app.get("/health")

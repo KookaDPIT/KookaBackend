@@ -55,6 +55,6 @@ def search(
     users = users_q.limit(20).all()
 
     return {
-        "recipes": [serializers.recipe_to_dict(db, r) for r in recipes],
+        "recipes": [serializers.recipe_to_dict(db, r, viewer=viewer) for r in recipes],
         "users": [serializers.user_to_dict(db, u, viewer) for u in users],
     }

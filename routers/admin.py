@@ -308,3 +308,143 @@ def unsuspend_user(
     db.commit()
     db.refresh(u)
     return _admin_user_dict(u)
+
+
+# ---------- LECȚII (Learn) ----------
+# Editarea unei lecții o marchează `custom`, așa că seed-ul de la pornire n-o
+# mai rescrie. `POST /admin/lessons/{slug}/reset` renunță la editare și readuce
+# lecția la conținutul din fișierele de seed.
+
+def _lesson_admin_dict(db: Session, lesson: models.Lesson):
+    from services import learn as learn_service, ranks as ranks_service
+
+    finished = (
+        db.query(func.count(models.LessonProgress.id))
+        .filter(
+            models.LessonProgress.lesson_id == lesson.id,
+            models.LessonProgress.completed.is_(True),
+        )
+        .scalar()
+    )
+    mastered = (
+        db.query(func.count(models.LessonProgress.id))
+        .filter(
+            models.LessonProgress.lesson_id == lesson.id,
+            models.LessonProgress.mastered.is_(True),
+        )
+        .scalar()
+    )
+    return {
+        "slug": lesson.slug,
+        "title": lesson.title,
+        "branch": lesson.branch,
+        "icon": lesson.icon or "",
+        "summary": lesson.summary or "",
+        "intro": lesson.content or "",
+        "video_url": lesson.video_url or "",
+        "req_tier": lesson.req_tier or 0,
+        "req_tier_label": ranks_service.tier_label(lesson.req_tier or 0),
+        "est_min": lesson.est_min or 0,
+        "xp": lesson.xp or 0,
+        "mastery_xp": lesson.mastery_xp or 0,
+        "depth": lesson.depth or 0,
+        "custom": bool(lesson.custom),
+        "steps": learn_service._load(lesson.steps, []),
+        "tips": learn_service._load(lesson.tips, []),
+        "prereqs": learn_service._load(lesson.prereqs, []),
+        # Aici răspunsurile corecte SUNT incluse: e o consolă de administrare,
+        # protejată de require_role("admin"), unde editarea lor e scopul.
+        "quiz": learn_service._load(lesson.quiz, []),
+        "mastery_quiz": learn_service._load(lesson.mastery_quiz, []),
+        "stats": {"completed": int(finished or 0), "mastered": int(mastered or 0)},
+    }
+
+
+@router.get("/lessons")
+def list_lessons(
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    lessons = db.query(models.Lesson).order_by(
+        models.Lesson.branch, models.Lesson.depth
+    ).all()
+    return [_lesson_admin_dict(db, lesson) for lesson in lessons]
+
+
+@router.get("/lessons/{slug}")
+def get_lesson_admin(
+    slug: str,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    lesson = db.query(models.Lesson).filter(models.Lesson.slug == slug).first()
+    if not lesson:
+        raise HTTPException(404, "Lecția nu există")
+    return _lesson_admin_dict(db, lesson)
+
+
+@router.patch("/lessons/{slug}")
+def update_lesson(
+    slug: str,
+    data: schemas.LessonAdminUpdate,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(require_role("admin")),
+):
+    import json as _json
+
+    from services import learn as learn_service
+
+    lesson = db.query(models.Lesson).filter(models.Lesson.slug == slug).first()
+    if not lesson:
+        raise HTTPException(404, "Lecția nu există")
+
+    payload = data.model_dump(exclude_none=True)
+    if not payload:
+        raise HTTPException(400, "Nimic de actualizat")
+
+    for field in ("title", "summary", "icon", "video_url", "est_min"):
+        if field in payload:
+            setattr(lesson, field, payload[field])
+    if "intro" in payload:
+        lesson.content = payload["intro"]
+    if "req_tier" in payload:
+        # XP-ul e derivat din treaptă, deci se recalculează odată cu ea.
+        lesson.req_tier = payload["req_tier"]
+        lesson.xp = learn_service.xp_for_tier(lesson.req_tier)
+        lesson.mastery_xp = learn_service.mastery_xp_for_tier(lesson.req_tier)
+    for field in ("steps", "tips", "prereqs"):
+        if field in payload:
+            setattr(lesson, field, _json.dumps(payload[field], ensure_ascii=False))
+    for field in ("quiz", "mastery_quiz"):
+        if field in payload:
+            questions = payload[field]
+            for item in questions:
+                if item["correct"] >= len(item["options"]):
+                    raise HTTPException(
+                        400, f"Răspunsul corect iese din lista de opțiuni: {item['q']}"
+                    )
+            setattr(lesson, field, _json.dumps(questions, ensure_ascii=False))
+
+    lesson.custom = True
+    db.commit()
+    db.refresh(lesson)
+    return _lesson_admin_dict(db, lesson)
+
+
+@router.post("/lessons/{slug}/reset")
+def reset_lesson(
+    slug: str,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(require_role("admin")),
+):
+    """Renunță la editările manuale și re-aplică seed-ul pe această lecție."""
+    from services import learn as learn_service
+
+    lesson = db.query(models.Lesson).filter(models.Lesson.slug == slug).first()
+    if not lesson:
+        raise HTTPException(404, "Lecția nu există")
+    lesson.custom = False
+    db.commit()
+    learn_service.seed_lessons(db)
+    db.refresh(lesson)
+    return _lesson_admin_dict(db, lesson)

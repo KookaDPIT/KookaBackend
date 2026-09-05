@@ -12,6 +12,12 @@ from sqlalchemy.orm import Session
 import models
 
 
+def _ranks():
+    """Import întârziat — evită un ciclu la import între module de servicii."""
+    from services import ranks
+    return ranks
+
+
 def iso_utc(dt):
     """ISO cu marcaj de fus orar.
 
@@ -63,9 +69,17 @@ def author_mini(user: "models.User"):
     }
 
 
-def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False):
-    """Card (full=False) sau detaliu complet (full=True)."""
+def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False,
+                   viewer: "models.User" = None):
+    """Card (full=False) sau detaliu complet (full=True).
+
+    `viewer` e folosit doar ca să spunem dacă rețeta e peste rank-ul lui —
+    afișarea (titlu, poză, rank) rămâne vizibilă, conținutul e blocat în router.
+    """
+    ranks = _ranks()
     avg, count, saves = recipe_stats(db, r.id)
+    rank = ranks.normalize_recipe_rank(getattr(r, "rank", ""), r.difficulty)
+    rank_meta = ranks.RANK_BY_ID.get(rank, {})
     data = {
         "id": r.id,
         "title": r.title,
@@ -74,6 +88,14 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False):
         "servings": r.servings,
         "duration_min": r.duration_min,
         "difficulty": r.difficulty,
+        "rank": rank,
+        "rank_name": rank_meta.get("name", rank.title()),
+        "rank_color": rank_meta.get("vibrant", ""),
+        "rank_tier": ranks.first_tier_of_rank(rank),
+        # Blocarea e o decizie de produs: rețetele peste rank-ul tău nu se
+        # deschid. Rămân vizibile ca listing, ca să ai ce să țintești.
+        "locked": viewer is not None
+        and not ranks.can_access_recipe(viewer.xp_total, rank),
         "calories": r.calories,
         "image_url": r.image_url or "",
         "images": _load_json(r.images, []),
@@ -89,7 +111,7 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False):
             "time": f"{r.duration_min} min" if r.duration_min else "",
             "servings": f"{r.servings} servings" if r.servings else "",
             "kcal": f"{r.calories} kcal" if r.calories else "",
-            "level": r.difficulty or "",
+            "level": rank_meta.get("name", rank.title()),
         },
     }
     if full:
@@ -143,8 +165,11 @@ def user_to_dict(db: Session, u: "models.User", viewer: "models.User" = None):
         "avatar_url": u.avatar_url or "",
         "cover_url": getattr(u, "cover_url", "") or "",
         "bio": u.bio or "",
+        # `level` rămâne pentru consumatorii vechi ai API-ului; rank-ul e sursa
+        # adevărului și se calculează din xp_total, deci nu se desincronizează.
         "level": u.level,
         "xp_total": u.xp_total,
+        "rank": _ranks().progress_for_xp(u.xp_total),
         "role": u.role,
         "followers": int(followers or 0),
         "following": int(following or 0),
