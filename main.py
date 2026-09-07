@@ -28,6 +28,8 @@ _MIGRATIONS = [
     "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS images TEXT DEFAULT ''",
     "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS moderation_status VARCHAR DEFAULT 'ok'",
     "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS ai_notes TEXT DEFAULT ''",
+    # Limba în care a fost scrisă rețeta; conținutul salvat e mereu în engleză.
+    "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS source_language VARCHAR DEFAULT 'en'",
     "ALTER TABLE saved_recipes ADD COLUMN IF NOT EXISTS cooked_verified BOOLEAN DEFAULT FALSE",
     "ALTER TABLE saved_recipes ADD COLUMN IF NOT EXISTS cook_photo_url VARCHAR DEFAULT ''",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_until TIMESTAMP",
@@ -91,7 +93,7 @@ app.add_middleware(
 )
 
 # ---------- Routere pe feature ----------
-from routers import recipes, reviews, users, search, daily, uploads, admin, forum, learn
+from routers import recipes, reviews, users, search, daily, uploads, admin, forum, learn, ai
 
 app.include_router(learn.router)
 app.include_router(recipes.router)
@@ -102,6 +104,7 @@ app.include_router(daily.router)
 app.include_router(uploads.router)
 app.include_router(admin.router)
 app.include_router(forum.router)
+app.include_router(ai.router)
 
 # Cele 50 de lecții vin din `data/lessons_seed.py` și se rescriu la fiecare
 # pornire, ca modificările de conținut să ajungă în DB fără migrare manuală.

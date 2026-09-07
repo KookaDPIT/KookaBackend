@@ -56,6 +56,9 @@ class Recipe(Base):
     images = Column(Text, default="")             # JSON: listă URL-uri galerie
     moderation_status = Column(String, default="ok")  # ok / flagged / hidden
     ai_notes = Column(Text, default="")           # motivul de la validarea AI
+    # Limba în care a scris autorul. Conținutul salvat e tradus în engleză;
+    # asta ne lasă să afișăm „Translated from Romanian" pe pagina rețetei.
+    source_language = Column(String, default="en")
     is_daily_dish = Column(Boolean, default=False)  # Daily Global Dish
     author_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

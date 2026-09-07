@@ -43,6 +43,16 @@ def _load_json(raw, default):
         return default
 
 
+def _lang_name(code: str) -> str:
+    """Numele afișabil al limbii sursă. Import întârziat: `services.ai` importă
+    la rândul lui modele, iar serializers e încărcat foarte devreme."""
+    try:
+        from services import ai
+        return ai.language_name(code)
+    except Exception:
+        return (code or "").upper()
+
+
 def recipe_stats(db: Session, recipe_id: int):
     """(avg_rating, review_count, saves) pentru o rețetă."""
     avg, count = (
@@ -100,6 +110,8 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False,
         "image_url": r.image_url or "",
         "images": _load_json(r.images, []),
         "moderation_status": r.moderation_status,
+        # limba în care a fost scrisă original (conținutul de mai jos e engleză)
+        "source_language": getattr(r, "source_language", "") or "en",
         "is_daily_dish": r.is_daily_dish,
         "author": author_mini(r.author),
         "created_at": iso_utc(r.created_at),
@@ -122,6 +134,9 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False,
                 "nutrition": _load_json(r.nutrition, []),
                 "allergens": _load_json(r.allergens, {"contains": [], "free": []}),
                 "ai_notes": r.ai_notes or "",
+                "source_language_name": _lang_name(
+                    getattr(r, "source_language", "") or "en"
+                ),
             }
         )
     return data

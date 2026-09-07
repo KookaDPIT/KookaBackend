@@ -30,10 +30,23 @@ def create_recipe(
 
     steps = [s.model_dump(exclude_none=True) for s in data.steps]
 
-    # ---- analiză AI: nutriție + moderare ----
-    analysis = ai.analyze_recipe(
+    # ---- traducere: site-ul e în engleză, autorul poate scrie în limba lui ----
+    # Ce ajunge în DB e mereu engleza; `source_language` reține originalul.
+    tr = ai.translate_recipe(
         title=data.title,
+        description=data.description,
         ingredients=data.ingredients,
+        steps=steps,
+    )
+    title = tr["title"].strip()
+    description = tr["description"]
+    ingredients = tr["ingredients"]
+    steps = tr["steps"]
+
+    # ---- analiză AI: nutriție + moderare (pe textul deja în engleză) ----
+    analysis = ai.analyze_recipe(
+        title=title,
+        ingredients=ingredients,
         steps=steps,
         servings=data.servings,
     )
@@ -46,15 +59,16 @@ def create_recipe(
         )
 
     recipe = models.Recipe(
-        title=data.title.strip(),
-        description=data.description,
+        title=title,
+        description=description,
         origin=data.origin,
         servings=data.servings,
         duration_min=data.duration_min,
         difficulty=data.difficulty,
         rank=ranks.normalize_recipe_rank(data.rank, data.difficulty),
-        ingredients=json.dumps(data.ingredients, ensure_ascii=False),
+        ingredients=json.dumps(ingredients, ensure_ascii=False),
         steps=json.dumps(steps, ensure_ascii=False),
+        source_language=tr["language"],
         nutrition=json.dumps(analysis["nutrition"], ensure_ascii=False),
         allergens=json.dumps(analysis["allergens"], ensure_ascii=False),
         calories=analysis["calories"],
@@ -196,6 +210,22 @@ def update_recipe(
     if "steps" in payload:
         steps = [s if isinstance(s, dict) else s for s in payload["steps"]]
         recipe.steps = json.dumps(steps, ensure_ascii=False)
+        recompute = True
+
+    # Editarea poate introduce text într-o altă limbă (sau poate readuce rețeta
+    # la engleză), deci retraducem ori de câte ori s-a atins conținutul.
+    if recompute or "title" in payload or "description" in payload:
+        tr = ai.translate_recipe(
+            title=recipe.title,
+            description=recipe.description or "",
+            ingredients=json.loads(recipe.ingredients or "[]"),
+            steps=json.loads(recipe.steps or "[]"),
+        )
+        recipe.title = tr["title"].strip() or recipe.title
+        recipe.description = tr["description"]
+        recipe.ingredients = json.dumps(tr["ingredients"], ensure_ascii=False)
+        recipe.steps = json.dumps(tr["steps"], ensure_ascii=False)
+        recipe.source_language = tr["language"]
         recompute = True
 
     if recompute:

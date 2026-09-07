@@ -153,3 +153,17 @@ class LessonAdminUpdate(BaseModel):
     quiz: Optional[List[QuizQuestion]] = None
     mastery_quiz: Optional[List[QuizQuestion]] = None
     prereqs: Optional[List[str]] = None
+
+
+# ---------- AI ----------
+class ChatTurn(BaseModel):
+    """Un schimb din panoul de chat: `role` e "user" sau "ai"."""
+    role: str = "user"
+    text: str = ""
+
+
+class CookAsk(BaseModel):
+    """Întrebare pusă în timpul gătitului. `step_index` e 0-based."""
+    message: str
+    step_index: int = 0
+    history: List[ChatTurn] = Field(default_factory=list)
