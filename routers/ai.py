@@ -14,9 +14,11 @@ nu au nevoie de rută proprie — rulează în fluxul rețetelor.
 """
 import base64
 import json
+import unicodedata
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import models
@@ -30,8 +32,31 @@ router = APIRouter(prefix="/ai", tags=["ai"])
 
 # O poză trimisă în chat: ajunge la model ca data-URI efemer și NU se stochează.
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
-# Câte rețete îi arătăm modelului ca să aibă din ce alege.
-CATALOGUE_LIMIT = 60
+# Câte rețete îi arătăm modelului ca să aibă din ce alege. Ține-l mic: fiecare
+# linie se plătește în tokeni la FIECARE mesaj, iar modelul oricum recomandă cel
+# mult trei. Cele trimise sunt cele mai apropiate de întrebare (vezi
+# `_rank_catalogue`), completate cu cele mai noi.
+CATALOGUE_LIMIT = 15
+# Din câte rețete alegem cele CATALOGUE_LIMIT. Filtrarea se face în Python, nu
+# în SQL, ca să meargă la fel pe Postgres și pe SQLite.
+CATALOGUE_POOL = 300
+# Cât de mult trebuie să semene două titluri ca să le tratăm drept același
+# preparat. 0.5 prinde „Carbonara" / „Spaghetti carbonara" fără să lipească
+# „Tomato soup" de „Tomato pasta".
+TITLE_SIMILARITY = 0.5
+
+# Cuvinte care apar în orice întrebare și n-ar face decât să potrivească la
+# întâmplare („what can I make with...").
+_STOPWORDS = {
+    "a", "an", "and", "any", "are", "as", "at", "be", "but", "can", "cook",
+    "cooking", "could", "do", "does", "eat", "find", "food", "for", "from", "get",
+    "give", "good", "got", "has", "have", "how", "i", "if", "in", "is", "it",
+    "its", "just", "know", "like", "make", "me", "my", "need", "not", "of", "on",
+    "or", "recipe", "recipes", "should", "so", "some", "something", "that", "the",
+    "their", "them", "then", "there", "these", "they", "this", "to", "up", "use",
+    "want", "was", "what", "when", "where", "which", "who", "will", "with",
+    "would", "you", "your",
+}
 
 
 # ==========================================================================
@@ -86,37 +111,226 @@ def ask_while_cooking(
 # CHAT LIBER
 # ==========================================================================
 
-def _accessible_recipes(db: Session, user: models.User):
-    """Rețetele pe care userul chiar le poate deschide, ca material pentru
-    recomandări. Aceleași filtre ca la listare, plus poarta de rank — n-are
-    rost să-i recomandăm ceva ce se lovește de un 403 la click."""
+def _batch_stats(db: Session, ids: list):
+    """(avg_rating, review_count, saves) pentru multe rețete deodată.
+
+    `serializers.recipe_stats` face trei interogări per rețetă — pe 300 de
+    rețete ar însemna sute de query-uri la fiecare mesaj din chat. Aici sunt
+    două, indiferent câte rețete avem.
+    """
+    if not ids:
+        return {}
+    stats = {rid: {"avg": 0.0, "reviews": 0, "saves": 0} for rid in ids}
+
+    rows = (
+        db.query(
+            models.Review.recipe_id,
+            func.avg(models.Review.rating),
+            func.count(models.Review.id),
+        )
+        .filter(models.Review.recipe_id.in_(ids))
+        .group_by(models.Review.recipe_id)
+        .all()
+    )
+    for rid, avg, count in rows:
+        stats[rid]["avg"] = float(avg or 0)
+        stats[rid]["reviews"] = int(count or 0)
+
+    rows = (
+        db.query(models.SavedRecipe.recipe_id, func.count(models.SavedRecipe.id))
+        .filter(models.SavedRecipe.recipe_id.in_(ids))
+        .group_by(models.SavedRecipe.recipe_id)
+        .all()
+    )
+    for rid, count in rows:
+        stats[rid]["saves"] = int(count or 0)
+
+    return stats
+
+
+def _title_tokens(title: str):
+    """Titlul redus la esență, pentru comparat: fără diacritice, fără
+    punctuație, fără glosarul din paranteză și fără cuvinte de umplutură.
+    „Ouă ochiuri cu roșii (sunny-side-up eggs)" și „Oua ochiuri cu rosii" ajung
+    la același set."""
+    text = title or ""
+    # glosa dintre paranteze e traducere, nu preparat diferit
+    while "(" in text and ")" in text:
+        start, end = text.index("("), text.index(")")
+        if start > end:
+            break
+        text = text[:start] + " " + text[end + 1:]
+    flat = unicodedata.normalize("NFKD", text)
+    flat = "".join(c for c in flat if not unicodedata.combining(c))
+    cleaned = "".join(c.lower() if c.isalnum() else " " for c in flat)
+    return {w for w in cleaned.split() if len(w) > 2 and w not in _STOPWORDS}
+
+
+def _similar(a: set, b: set) -> bool:
+    """Două titluri despre același preparat.
+
+    Doar Jaccard nu e destul: „Carbonara" și „Spaghetti carbonara" ies la 0.5
+    și ar rămâne separate, deși sunt evident aceeași rețetă. Așa că cerem două
+    lucruri deodată — titlul scurt să fie aproape complet cuprins în celălalt
+    (containment), dar cele două să nu difere prea mult ca lungime (Jaccard).
+    A doua condiție e cea care ține „Carbonara" departe de „Carbonara with peas
+    and bacon", care chiar e alt preparat.
+    """
+    if not a or not b:
+        return False
+    common = len(a & b)
+    if not common:
+        return False
+    containment = common / min(len(a), len(b))
+    jaccard = common / len(a | b)
+    return containment >= 0.8 and jaccard >= TITLE_SIMILARITY
+
+
+def _quality_score(r: dict) -> float:
+    """Cât de bună e o rețetă, când trebuie să alegem una dintre mai multe
+    variante ale aceluiași preparat.
+
+    Nota se trage spre medie când sunt puține recenzii (un singur 5 nu trebuie
+    să bată un 4.6 din patruzeci), apoi contează cât de completă e rețeta —
+    una cu poză și cu nutriție calculată e mai utilă cuiva care o deschide.
+    """
+    prior, weight = 3.5, 5.0        # media presupusă și cât de repede o părăsim
+    reviews = r.get("reviews", 0)
+    rating = ((r.get("avg", 0.0) * reviews) + (prior * weight)) / (reviews + weight)
+
+    score = rating * 10
+    score += min(r.get("saves", 0), 20) * 0.5
+    score += min(reviews, 20) * 0.2
+    if r.get("has_image"):
+        score += 3
+    if r.get("calories"):
+        score += 1
+    if r.get("has_description"):
+        score += 1
+    return score
+
+
+def _dedupe_by_dish(rows: list):
+    """Un singur card per preparat: cea mai bună variantă a fiecăruia.
+
+    Fără asta, un chat care recomandă „ouă ochiuri" arată trei carduri aproape
+    identice, pentru că trei utilizatori au publicat aceeași rețetă.
+    """
+    groups = []                      # [(tokens, [rows...])]
+    for r in rows:
+        tokens = _title_tokens(r["title"])
+        for group_tokens, members in groups:
+            if _similar(tokens, group_tokens):
+                members.append(r)
+                break
+        else:
+            groups.append((tokens, [r]))
+
+    out = []
+    for _, members in groups:
+        best = max(members, key=_quality_score)
+        # spunem modelului câte variante am strâns, ca să nu pretindă că e unica
+        best = dict(best, duplicates=len(members) - 1)
+        out.append(best)
+    return out
+
+
+def _keywords(text: str):
+    """Cuvintele purtătoare de sens dintr-o întrebare, pentru potrivire."""
+    cleaned = "".join(ch.lower() if ch.isalnum() else " " for ch in (text or ""))
+    return {w for w in cleaned.split() if len(w) > 2 and w not in _STOPWORDS}
+
+
+def _same_stem(a: str, b: str, n: int = 4) -> bool:
+    """Potrivire slabă pe rădăcină: „italian"/„Italy", „tomatoes"/„tomato".
+    Fără librărie de stemming — n-avem nevoie de mai mult decât atât aici."""
+    return len(a) >= n and len(b) >= n and a[:n] == b[:n]
+
+
+def _rank_catalogue(rows: list, message: str, limit: int = CATALOGUE_LIMIT):
+    """Cele mai potrivite `limit` rețete pentru întrebare.
+
+    Punctajul e simplu — câte cuvinte din întrebare apar în titlu sau în țara de
+    origine. Nu e căutare semantică și nici nu trebuie să fie: rolul ei e doar
+    să ridice deasupra rețetele plauzibile. Lista se completează întotdeauna
+    până la `limit` cu cele mai noi, ca modelul să aibă ce recomanda și când
+    întrebarea nu seamănă cu nimic („ceva de cină?").
+    """
+    words = _keywords(message)
+    if words:
+        scored = []
+        for r in rows:
+            tokens = _keywords(f"{r['title']} {r.get('origin', '')}")
+            haystack = f"{r['title']} {r.get('origin', '')}".lower()
+            score = 0
+            for w in words:
+                if w in haystack:
+                    score += 2                      # potrivire directă: „chicken"
+                elif any(_same_stem(w, t) for t in tokens):
+                    score += 1                      # „italian" ~ „Italy"
+            if score:
+                scored.append((score, r))
+        scored.sort(key=lambda pair: -pair[0])
+        out = [r for _, r in scored[:limit]]
+    else:
+        out = []
+
+    if len(out) < limit:
+        seen = {r["id"] for r in out}
+        for r in rows:                      # `rows` vine deja de la nou la vechi
+            if r["id"] not in seen:
+                out.append(r)
+                if len(out) >= limit:
+                    break
+    return out
+
+
+def _accessible_recipes(db: Session, user: models.User, message: str = ""):
+    """Rețetele pe care userul chiar le poate deschide, restrânse la cele
+    relevante pentru întrebare. Aceleași filtre ca la listare, plus poarta de
+    rank — n-are rost să-i recomandăm ceva ce se lovește de un 403 la click."""
     q = db.query(models.Recipe).filter(models.Recipe.moderation_status == "ok")
     q = visibility.visible_authors(
         q, models.Recipe, visibility.hidden_author_ids(db, user)
     )
 
-    rows = q.order_by(models.Recipe.created_at.desc()).limit(300).all()
+    rows = q.order_by(models.Recipe.created_at.desc()).limit(CATALOGUE_POOL).all()
 
     xp = user.xp_total or 0
     staff = visibility.is_staff(user)
-    out = []
-    for r in rows:
-        rank = ranks.normalize_recipe_rank(r.rank, r.difficulty)
-        if not staff and r.author_id != user.id and not ranks.can_access_recipe(xp, rank):
-            continue
-        out.append(
+    visible = [
+        r for r in rows
+        if staff
+        or r.author_id == user.id
+        or ranks.can_access_recipe(
+            xp, ranks.normalize_recipe_rank(r.rank, r.difficulty)
+        )
+    ]
+
+    stats = _batch_stats(db, [r.id for r in visible])
+    allowed = []
+    for r in visible:
+        st = stats.get(r.id, {})
+        allowed.append(
             {
                 "id": r.id,
                 "title": r.title,
                 "origin": r.origin or "",
                 "duration_min": r.duration_min or 0,
                 "calories": r.calories or 0,
-                "rank": rank,
+                "rank": ranks.normalize_recipe_rank(r.rank, r.difficulty),
+                "avg": st.get("avg", 0.0),
+                "reviews": st.get("reviews", 0),
+                "saves": st.get("saves", 0),
+                "has_image": bool(r.image_url),
+                "has_description": bool(r.description),
             }
         )
-        if len(out) >= CATALOGUE_LIMIT:
-            break
-    return out
+
+    # Întâi scăpăm de variantele duplicate ale aceluiași preparat, apoi alegem
+    # cele mai potrivite pentru întrebare — altfel cele 15 locuri s-ar umple cu
+    # aceeași rețetă publicată de trei oameni.
+    return _rank_catalogue(_dedupe_by_dish(allowed), message)
 
 
 def _conversation_or_404(db: Session, user: models.User, conversation_id: int):
@@ -280,7 +494,7 @@ def send_message(
             "name": user.full_name or user.username or "",
             "rank": progress.get("rank_name", ""),
         },
-        catalogue=_accessible_recipes(db, user),
+        catalogue=_accessible_recipes(db, user, message),
         image_data_uri=image or None,
         want_title=is_new,
     )

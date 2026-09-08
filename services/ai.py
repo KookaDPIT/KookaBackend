@@ -13,6 +13,11 @@ load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TEXT_MODEL = os.getenv("GROQ_TEXT_MODEL", "llama-3.3-70b-versatile")
 VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+# Munca de fundal (traducere, nutriție, moderare) — treabă tăcută, la care nimeni
+# nu se uită cum scrie. Groq numără tokenii SEPARAT pentru fiecare model, așa că
+# mutând-o pe alt model îi dai conversației cu utilizatorul o cotă întreagă doar
+# a ei. Implicit rămâne pe TEXT_MODEL: setează GROQ_UTILITY_MODEL ca să separi.
+UTILITY_MODEL = os.getenv("GROQ_UTILITY_MODEL", "") or TEXT_MODEL
 
 # Nutriție implicită (per porție) când AI-ul nu răspunde — structura pe care o
 # așteaptă frontendul pentru gauge-uri.
@@ -95,7 +100,7 @@ Only output the JSON."""
 
     try:
         resp = client.chat.completions.create(
-            model=TEXT_MODEL,
+            model=UTILITY_MODEL,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.2,
@@ -244,7 +249,7 @@ Only output the JSON."""
 
     try:
         resp = client.chat.completions.create(
-            model=TEXT_MODEL,
+            model=UTILITY_MODEL,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.1,
@@ -417,12 +422,23 @@ How to talk:
   and steer back to food without being preachy.
 
 Recommending recipes:
-- You are given a CATALOGUE of recipes that exist in this app and that this user
-  is allowed to open. If one or more genuinely fit what they asked, put their ids
-  in "recipe_ids" (at most 3, best first) and refer to them naturally in your text.
-- Only ever use ids from the catalogue. Never invent a recipe id or claim the app
-  has a recipe it does not. If nothing fits, say so and give them a normal answer
-  or a recipe from your own knowledge, with "recipe_ids": [].
+- The CATALOGUE below is what this app actually has for this user. It is already
+  filtered to their question and de-duplicated, so each line is a distinct dish.
+- ALWAYS check the catalogue before you answer. If something in it fits, that is
+  what you recommend: put the ids in "recipe_ids" (at most 3, best first) and
+  talk about THOSE recipes by name in your text - their real time, calories and
+  rating, exactly as listed. Do not describe a different version from memory
+  while showing a card for ours; the person sees the card next to your words.
+- When two entries are close, prefer the better-rated one, then the faster one.
+- Only ever use ids from the catalogue. Never invent an id and never claim the
+  app has a recipe it does not.
+- Ids are plumbing: they belong in "recipe_ids" only. NEVER write an id in your
+  reply text ("recipe 2", "id 3"). The person sees a card with the recipe's name
+  on it, not a number - so refer to it by name, e.g. "I've put our Spaghetti
+  carbonara below".
+- If nothing in the catalogue fits, say so plainly - "we don't have one for that
+  yet" - and then help from your own cooking knowledge, with "recipe_ids": [].
+  Do not pad the list with recipes that only vaguely relate.
 
 Estimating what someone ate:
 - If they describe food they have eaten and want to know the calories, fill in
@@ -461,8 +477,9 @@ def chat_reply(
     """Un tur de conversație cu Kooka.
 
     `catalogue` e o listă de dict-uri {id, title, origin, duration_min, calories,
-    rank} — doar rețete la care userul are acces. `image_data_uri` mută apelul
-    pe modelul de vision (poza nu se stochează nicăieri).
+    rank, avg, reviews} — doar rețete la care userul are acces, deja
+    deduplicate. `image_data_uri` mută apelul pe modelul de vision (poza nu se
+    stochează nicăieri).
 
     Întoarce {"text", "recipe_ids", "nutrition", "title", "ok"}.
     """
@@ -490,12 +507,18 @@ def chat_reply(
 
     if catalogue:
         context_lines.append("")
-        context_lines.append("CATALOGUE (id | title | origin | time | kcal | rank):")
+        context_lines.append(
+            "CATALOGUE - the recipes this app actually has for this user. "
+            "Rating is shown as average/number of reviews."
+        )
+        context_lines.append("id | title | origin | time | kcal | rank | rating")
         for r in catalogue:
+            reviews = r.get("reviews") or 0
+            rating = f"{r.get('avg', 0):.1f}/{reviews}" if reviews else "unrated"
             context_lines.append(
                 f"{r['id']} | {r['title']} | {r.get('origin') or '-'} | "
                 f"{r.get('duration_min') or '?'} min | {r.get('calories') or '?'} kcal | "
-                f"{r.get('rank') or '-'}"
+                f"{r.get('rank') or '-'} | {rating}"
             )
     else:
         context_lines.append("")
