@@ -167,3 +167,14 @@ class CookAsk(BaseModel):
     message: str
     step_index: int = 0
     history: List[ChatTurn] = Field(default_factory=list)
+
+
+class ChatAsk(BaseModel):
+    """Un mesaj către Kooka în chatul liber.
+
+    Fără `conversation_id` se deschide un fir nou. `image` e un data-URI
+    (`data:image/jpeg;base64,...`) — poza ajunge la model o singură dată și nu
+    se salvează nicăieri."""
+    message: str = ""
+    conversation_id: Optional[int] = None
+    image: str = ""

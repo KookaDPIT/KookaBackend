@@ -271,3 +271,42 @@ class DailyDish(Base):
     date = Column(String, unique=True, index=True)  # YYYY-MM-DD (UTC)
     recipe_id = Column(Integer, ForeignKey("recipes.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ---------- CHAT CU KOOKA ----------
+class ChatConversation(Base):
+    """Un fir de discuție cu asistentul. Titlul e generat din prima întrebare,
+    ca lista din bara laterală să fie recunoscibilă fără să deschizi firul."""
+    __tablename__ = "chat_conversations"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    title = Column(String, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+    messages = relationship(
+        "ChatMessage",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        order_by="ChatMessage.id",
+    )
+
+
+class ChatMessage(Base):
+    """Un mesaj din fir. `role` e 'user' sau 'ai'.
+
+    Pozele NU se stochează: modelul le vede o dată, ca data-URI efemer, apoi
+    rămâne doar `has_photo` ca să putem reda bula corect la reîncărcare.
+    `cards` ține JSON-ul atașamentelor bogate (rețete recomandate, estimarea
+    nutrițională), ca firul reîncărcat să arate exact ca la prima rulare.
+    """
+    __tablename__ = "chat_messages"
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("chat_conversations.id"), index=True)
+    role = Column(String, default="user")
+    text = Column(Text, default="")
+    has_photo = Column(Boolean, default=False)
+    cards = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    conversation = relationship("ChatConversation", back_populates="messages")

@@ -387,3 +387,176 @@ def cook_answer(recipe: dict, step_index: int, question: str, history: list = No
         return {"text": text or COOK_FALLBACK, "ok": bool(text)}
     except Exception:
         return {"text": COOK_FALLBACK, "ok": False}
+
+
+# ==========================================================================
+# CHAT LIBER CU KOOKA
+# Spre deosebire de cook-along (unde contextul e o singură rețetă), aici
+# modelul primește catalogul de rețete la care userul chiar are acces și
+# poate să recomande din el. Ce iese e text de conversație plus, opțional,
+# atașamente structurate: rețete reale (carduri) și o estimare nutrițională.
+# ==========================================================================
+
+CHAT_FALLBACK = (
+    "I'm having trouble reaching my recipe books right now. Give me a moment "
+    "and ask me again."
+)
+
+CHAT_SYSTEM = """You are Kooka, the cooking companion built into the Kooka app.
+You are talking to a home cook. Be warm, direct and practical - like a friend who
+happens to cook well, not like a manual.
+
+How to talk:
+- Plain conversational English. Short paragraphs. Answer the question first.
+- Use a "- " bullet list only when you are genuinely listing things (options,
+  ingredients, steps). Never more than 6 bullets. No headings, no tables, no emoji.
+- You may use **bold** sparingly for an ingredient or a number that matters.
+- Ask a follow-up question when you genuinely need one thing to answer well.
+  Otherwise just answer - do not interrogate people.
+- Cooking is your subject. If someone asks about something else, answer briefly
+  and steer back to food without being preachy.
+
+Recommending recipes:
+- You are given a CATALOGUE of recipes that exist in this app and that this user
+  is allowed to open. If one or more genuinely fit what they asked, put their ids
+  in "recipe_ids" (at most 3, best first) and refer to them naturally in your text.
+- Only ever use ids from the catalogue. Never invent a recipe id or claim the app
+  has a recipe it does not. If nothing fits, say so and give them a normal answer
+  or a recipe from your own knowledge, with "recipe_ids": [].
+
+Estimating what someone ate:
+- If they describe food they have eaten and want to know the calories, fill in
+  "nutrition" with your best estimate. Otherwise leave it null.
+
+Always reply in English."""
+
+
+def _chat_json_shape(want_title: bool) -> str:
+    title_line = (
+        '  "title": "<3-6 word name for this conversation>",\n' if want_title else ""
+    )
+    return f"""Return STRICT JSON with exactly this shape:
+{{
+{title_line}  "reply": "<your answer, plain text>",
+  "recipe_ids": [<ids from the catalogue, or empty>],
+  "nutrition": null
+}}
+When you are estimating a meal, "nutrition" instead looks like:
+{{
+  "total_kcal": <int>, "confidence": "low|medium|high",
+  "items": [{{"name": "...", "detail": "2 slices", "kcal": <int>}}],
+  "macros": {{"carbs_g": <int>, "fat_g": <int>, "protein_g": <int>}}
+}}
+Only output the JSON."""
+
+
+def chat_reply(
+    message: str,
+    history: list = None,
+    user_ctx: dict = None,
+    catalogue: list = None,
+    image_data_uri: str = None,
+    want_title: bool = False,
+):
+    """Un tur de conversație cu Kooka.
+
+    `catalogue` e o listă de dict-uri {id, title, origin, duration_min, calories,
+    rank} — doar rețete la care userul are acces. `image_data_uri` mută apelul
+    pe modelul de vision (poza nu se stochează nicăieri).
+
+    Întoarce {"text", "recipe_ids", "nutrition", "title", "ok"}.
+    """
+    empty = {
+        "text": CHAT_FALLBACK,
+        "recipe_ids": [],
+        "nutrition": None,
+        "title": "",
+        "ok": False,
+    }
+
+    client = _client()
+    if client is None:
+        return empty
+
+    context_lines = []
+    if user_ctx:
+        who = user_ctx.get("name") or "this cook"
+        context_lines.append(f"You are talking to {who}.")
+        if user_ctx.get("rank"):
+            context_lines.append(
+                f"Their rank in the app is {user_ctx['rank']} - keep suggestions "
+                "at or below that level of difficulty."
+            )
+
+    if catalogue:
+        context_lines.append("")
+        context_lines.append("CATALOGUE (id | title | origin | time | kcal | rank):")
+        for r in catalogue:
+            context_lines.append(
+                f"{r['id']} | {r['title']} | {r.get('origin') or '-'} | "
+                f"{r.get('duration_min') or '?'} min | {r.get('calories') or '?'} kcal | "
+                f"{r.get('rank') or '-'}"
+            )
+    else:
+        context_lines.append("")
+        context_lines.append(
+            "CATALOGUE: empty - this app has no recipes you can point them to yet, "
+            'so always return "recipe_ids": [].'
+        )
+
+    messages = [
+        {"role": "system", "content": CHAT_SYSTEM},
+        {"role": "system", "content": "\n".join(context_lines)},
+        {"role": "system", "content": _chat_json_shape(want_title)},
+    ]
+
+    for m in (history or [])[-12:]:
+        role = "assistant" if m.get("role") == "ai" else "user"
+        text = (m.get("text") or "").strip()
+        if text:
+            messages.append({"role": role, "content": text[:2000]})
+
+    if image_data_uri:
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": message[:2000] or "What do you see here?"},
+                    {"type": "image_url", "image_url": {"url": image_data_uri}},
+                ],
+            }
+        )
+    else:
+        messages.append({"role": "user", "content": message[:2000]})
+
+    try:
+        resp = client.chat.completions.create(
+            model=VISION_MODEL if image_data_uri else TEXT_MODEL,
+            messages=messages,
+            response_format={"type": "json_object"},
+            temperature=0.6,
+            max_tokens=1200,
+        )
+        data = json.loads(resp.choices[0].message.content)
+    except Exception:
+        return empty
+
+    # ids valide = doar cele chiar existente în catalog; modelul mai inventează
+    allowed = {int(r["id"]) for r in (catalogue or [])}
+    ids = []
+    for rid in (data.get("recipe_ids") or [])[:3]:
+        try:
+            rid = int(rid)
+        except (TypeError, ValueError):
+            continue
+        if rid in allowed and rid not in ids:
+            ids.append(rid)
+
+    text = str(data.get("reply") or "").strip()
+    return {
+        "text": text or CHAT_FALLBACK,
+        "recipe_ids": ids,
+        "nutrition": data.get("nutrition") if isinstance(data.get("nutrition"), dict) else None,
+        "title": str(data.get("title") or "").strip()[:80],
+        "ok": bool(text),
+    }
