@@ -3,7 +3,7 @@
 Notă: câmpurile stocate ca JSON în DB (ingredients, steps, nutrition,
 allergens, images) sunt serializate/deserializate în routere, așa că aici
 răspunsurile complexe folosesc tipuri Python native (list/dict)."""
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel, Field
 
 
@@ -67,7 +67,9 @@ class ProfileUpdate(BaseModel):
     bio: Optional[str] = None
     avatar_url: Optional[str] = None
     cover_url: Optional[str] = None
-    allergies: Optional[str] = None
+    # listă bifată în interfață sau șirul istoric separat prin virgulă —
+    # normalizarea la o singură formă se face în router
+    allergies: Optional[Union[str, List[str]]] = None
     preferences: Optional[str] = None
     theme: Optional[str] = None
     language: Optional[str] = None

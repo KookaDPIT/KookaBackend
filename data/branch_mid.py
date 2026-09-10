@@ -167,7 +167,7 @@ LESSONS = [
         ],
     },
     {
-        "slug": "eggs-souffle", "branch": "eggs", "title": "Meringue & Soufflé", "icon": "🍥",
+        "slug": "eggs-souffle", "branch": "eggs", "title": "Meringue & Soufflé", "icon": "🧁",
         "req_tier": 10, "est_min": 30,
         "summary": "Whipping whites into a structure that holds air — and getting it into the oven before it collapses.",
         "intro": (
@@ -233,7 +233,7 @@ LESSONS = [
         ],
     },
     {
-        "slug": "sauce-emulsion", "branch": "sauce", "title": "Cold Emulsions", "icon": "🥣",
+        "slug": "sauce-emulsion", "branch": "sauce", "title": "Cold Emulsions", "icon": "🥗",
         "req_tier": 5, "est_min": 25,
         "summary": "Mayonnaise and vinaigrette: forcing oil and water to hold hands and stay together.",
         "intro": (

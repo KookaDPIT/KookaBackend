@@ -87,9 +87,18 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False,
     afișarea (titlu, poză, rank) rămâne vizibilă, conținutul e blocat în router.
     """
     ranks = _ranks()
+    from services import allergens as allergen_svc
+
     avg, count, saves = recipe_stats(db, r.id)
     rank = ranks.normalize_recipe_rank(getattr(r, "rank", ""), r.difficulty)
     rank_meta = ranks.RANK_BY_ID.get(rank, {})
+    # Alergenii circulă și pe card, nu doar pe detaliu: „Fără alergenii mei" e
+    # un filtru de listă, iar un card fără ei n-ar putea purta avertismentul.
+    allergen_data = _load_json(r.allergens, {"contains": [], "free": []})
+    viewer_allergies = (
+        allergen_svc.parse_user(getattr(viewer, "allergies", "")) if viewer else []
+    )
+    clashes = allergen_svc.conflicts(viewer_allergies, allergen_data)
     data = {
         "id": r.id,
         "title": r.title,
@@ -110,6 +119,9 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False,
         "image_url": r.image_url or "",
         "images": _load_json(r.images, []),
         "moderation_status": r.moderation_status,
+        "allergen_contains": sorted(allergen_data.get("contains") or []),
+        # ce anume din rețetă lovește alergiile declarate de cel care se uită
+        "allergen_conflicts": [allergen_svc.label_of(k) for k in clashes],
         # limba în care a fost scrisă original (conținutul de mai jos e engleză)
         "source_language": getattr(r, "source_language", "") or "en",
         "is_daily_dish": r.is_daily_dish,
@@ -200,6 +212,8 @@ def user_to_dict(db: Session, u: "models.User", viewer: "models.User" = None):
         data["language"] = u.language or "ro"
         data["units"] = u.units or "metric"
         data["settings"] = _load_json(getattr(u, "settings", ""), {})
+        from services import allergens as allergen_svc
+        data["allergies"] = allergen_svc.parse_user(getattr(u, "allergies", ""))
         # Starea de sancțiune trebuie să ajungă la posesor, altfel interfața n-are
         # cum să-i spună de ce nu mai poate face nimic: în DB scria „suspendat",
         # dar /me nu raporta asta, așa că frontend-ul îl trata ca pe oricine.

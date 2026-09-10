@@ -10,7 +10,7 @@ import schemas
 import serializers
 from database import get_db
 from deps import get_current_user, get_current_user_optional
-from services import ai, ranks, visibility
+from services import ai, feed, ranks, visibility
 
 router = APIRouter(prefix="/recipes", tags=["recipes"])
 
@@ -89,12 +89,22 @@ def create_recipe(
     return serializers.recipe_to_dict(db, recipe, full=True)
 
 
+# Filtrele care nu se pot exprima în SQL (au nevoie de ingredientele și
+# alergenii deserializați, sau de semnalul social al celui care se uită) se
+# rezolvă în Python peste un lot mai mare decât pagina cerută.
+_SMART_FILTERS = {"recommended", "fridge", "allergy_free"}
+_SMART_POOL = 240
+
+
 @router.get("")
 def list_recipes(
     db: Session = Depends(get_db),
     viewer: models.User = Depends(get_current_user_optional),
     q: str = Query("", description="căutare titlu/țară"),
-    filter: str = Query("", description="recommended|under30|top_rated"),
+    filter: str = Query(
+        "", description="recommended|under30|fridge|allergy_free|top_rated"
+    ),
+    pantry: str = Query("", description="ingrediente din frigider, separate prin virgulă"),
     limit: int = Query(20, le=100),
     offset: int = 0,
 ):
@@ -114,6 +124,7 @@ def list_recipes(
 
     if filter == "under30":
         query = query.filter(models.Recipe.duration_min <= 30, models.Recipe.duration_min > 0)
+
     if filter == "top_rated":
         # ordonăm după rating mediu
         avg = func.coalesce(func.avg(models.Review.rating), 0)
@@ -124,6 +135,15 @@ def list_recipes(
         )
     else:
         query = query.order_by(models.Recipe.created_at.desc())
+
+    if filter in _SMART_FILTERS:
+        pool = query.limit(_SMART_POOL).all()
+        ranked = feed.apply_smart_filter(db, pool, filter, viewer, pantry)
+        page = ranked[offset : offset + limit]
+        return [
+            {**serializers.recipe_to_dict(db, r, viewer=viewer), **extra}
+            for r, extra in page
+        ]
 
     recipes = query.offset(offset).limit(limit).all()
     return [serializers.recipe_to_dict(db, r, viewer=viewer) for r in recipes]

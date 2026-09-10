@@ -448,3 +448,175 @@ def reset_lesson(
     learn_service.seed_lessons(db)
     db.refresh(lesson)
     return _lesson_admin_dict(db, lesson)
+
+
+# ---------- tabloul de bord ----------
+
+def _since(days: int) -> datetime:
+    return datetime.utcnow() - timedelta(days=days)
+
+
+def _count(db: Session, model, *filters) -> int:
+    q = db.query(func.count(model.id))
+    for f in filters:
+        q = q.filter(f)
+    return int(q.scalar() or 0)
+
+
+def _daily_series(db: Session, model, days: int = 14) -> list:
+    """Câte rânduri pe zi în ultimele `days` zile, inclusiv zilele goale.
+
+    Numărăm în Python peste `created_at`: `date_trunc` e specific Postgres, iar
+    dezvoltarea locală merge pe SQLite — o serie de două săptămâni e destul de
+    mică încât diferența să nu conteze.
+    """
+    start = _since(days - 1).replace(hour=0, minute=0, second=0, microsecond=0)
+    rows = (
+        db.query(model.created_at)
+        .filter(model.created_at >= start)
+        .all()
+    )
+    buckets = {}
+    for (created,) in rows:
+        if created is None:
+            continue
+        buckets[created.date().isoformat()] = buckets.get(created.date().isoformat(), 0) + 1
+    out = []
+    for offset in range(days):
+        day = (start + timedelta(days=offset)).date().isoformat()
+        out.append({"date": day, "count": buckets.get(day, 0)})
+    return out
+
+
+@router.get("/stats")
+def moderation_stats(
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    """Ce se întâmplă în aplicație, pe o singură pagină.
+
+    Consola avea doar cozi de lucru: puteai trata ce era în fața ta, dar nu
+    vedeai dacă e o zi liniștită sau un val. Aici sunt totalurile, ce s-a
+    întâmplat în ultimele 7 zile, cozile deschise și cine e activ.
+    """
+    week = _since(7)
+    now = datetime.utcnow()
+
+    users_total = _count(db, models.User)
+    users_new = _count(db, models.User, models.User.created_at >= week)
+    users_suspended = _count(db, models.User, models.User.suspended_until > now)
+    users_inactive = _count(db, models.User, models.User.is_active == False)  # noqa: E712
+    staff = _count(db, models.User, models.User.role.in_(("admin", "moderator")))
+
+    recipes_total = _count(db, models.Recipe)
+    recipes_new = _count(db, models.Recipe, models.Recipe.created_at >= week)
+    recipes_flagged = _count(db, models.Recipe, models.Recipe.moderation_status == "flagged")
+    recipes_hidden = _count(db, models.Recipe, models.Recipe.moderation_status == "hidden")
+
+    posts_total = _count(db, models.ForumPost)
+    posts_new = _count(db, models.ForumPost, models.ForumPost.created_at >= week)
+    posts_hidden = _count(db, models.ForumPost, models.ForumPost.moderation_status == "hidden")
+    comments_total = _count(db, models.ForumComment)
+
+    reviews_total = _count(db, models.Review)
+    reviews_new = _count(db, models.Review, models.Review.created_at >= week)
+    cooks_verified = _count(
+        db, models.SavedRecipe, models.SavedRecipe.cooked_verified == True  # noqa: E712
+    )
+
+    # Cine a scris ceva în ultima săptămână — proxy pentru „activ", fără un
+    # tabel de sesiuni pe care oricum nu-l avem.
+    active_authors = {
+        row[0]
+        for row in db.query(models.Recipe.author_id)
+        .filter(models.Recipe.created_at >= week)
+        .all()
+    }
+    active_authors |= {
+        row[0]
+        for row in db.query(models.Review.user_id)
+        .filter(models.Review.created_at >= week)
+        .all()
+    }
+    active_authors |= {
+        row[0]
+        for row in db.query(models.ForumPost.author_id)
+        .filter(models.ForumPost.created_at >= week)
+        .all()
+    }
+    active_authors.discard(None)
+
+    top_recipes = (
+        db.query(
+            models.Recipe,
+            func.coalesce(func.avg(models.Review.rating), 0).label("avg"),
+            func.count(models.Review.id).label("n"),
+        )
+        .outerjoin(models.Review, models.Review.recipe_id == models.Recipe.id)
+        .filter(models.Recipe.moderation_status == "ok")
+        .group_by(models.Recipe.id)
+        .having(func.count(models.Review.id) > 0)
+        .order_by(func.avg(models.Review.rating).desc(), func.count(models.Review.id).desc())
+        .limit(5)
+        .all()
+    )
+
+    newest = (
+        db.query(models.User)
+        .order_by(models.User.created_at.desc())
+        .limit(5)
+        .all()
+    )
+
+    return {
+        "generated_at": iso_utc(now),
+        "totals": {
+            "users": users_total,
+            "recipes": recipes_total,
+            "posts": posts_total,
+            "comments": comments_total,
+            "reviews": reviews_total,
+            "cooks_verified": cooks_verified,
+        },
+        "week": {
+            "users": users_new,
+            "recipes": recipes_new,
+            "posts": posts_new,
+            "reviews": reviews_new,
+            "active_people": len(active_authors),
+        },
+        "queues": {
+            "flagged_recipes": recipes_flagged,
+            "hidden_recipes": recipes_hidden,
+            "hidden_posts": posts_hidden,
+        },
+        "accounts": {
+            "suspended": users_suspended,
+            "deactivated": users_inactive,
+            "staff": staff,
+        },
+        "series": {
+            "signups": _daily_series(db, models.User),
+            "recipes": _daily_series(db, models.Recipe),
+            "posts": _daily_series(db, models.ForumPost),
+        },
+        "top_recipes": [
+            {
+                "id": r.id,
+                "title": r.title,
+                "image_url": r.image_url or "",
+                "avg_rating": round(float(avg or 0), 1),
+                "review_count": int(n or 0),
+                "author": serializers.author_mini(r.author),
+            }
+            for r, avg, n in top_recipes
+        ],
+        "newest_users": [
+            {
+                **serializers.author_mini(u),
+                "role": u.role,
+                "created_at": iso_utc(u.created_at),
+            }
+            for u in newest
+        ],
+    }

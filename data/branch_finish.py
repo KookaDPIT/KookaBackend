@@ -36,7 +36,7 @@ LESSONS = [
         ],
     },
     {
-        "slug": "stock-brown", "branch": "stock", "title": "Brown Stock & Demi", "icon": "🟤",
+        "slug": "stock-brown", "branch": "stock", "title": "Brown Stock & Demi", "icon": "🦴",
         "req_tier": 4, "est_min": 30,
         "summary": "Roast first, then simmer. The deep, dark base under classical sauces.",
         "intro": (
@@ -101,7 +101,7 @@ LESSONS = [
         ],
     },
     {
-        "slug": "stock-consomme", "branch": "stock", "title": "Clarification & Consommé", "icon": "💎",
+        "slug": "stock-consomme", "branch": "stock", "title": "Clarification & Consommé", "icon": "🍵",
         "req_tier": 9, "est_min": 35,
         "summary": "A raft of egg white that filters a cloudy stock into something you can read print through.",
         "intro": (
@@ -167,7 +167,7 @@ LESSONS = [
 
     # ================= PLATING & PASTRY =================
     {
-        "slug": "plate-balance", "branch": "plate", "title": "Balancing a Plate", "icon": "⚖️",
+        "slug": "plate-balance", "branch": "plate", "title": "Balancing a Plate", "icon": "🍽️",
         "req_tier": 5, "est_min": 20,
         "summary": "Texture, temperature, acid and richness — the four checks before food leaves the kitchen.",
         "intro": (

@@ -68,7 +68,7 @@ LESSONS = [
         ],
     },
     {
-        "slug": "bake-leavening", "branch": "bake", "title": "Leavening Agents", "icon": "🫧",
+        "slug": "bake-leavening", "branch": "bake", "title": "Leavening Agents", "icon": "🎈",
         "req_tier": 4, "est_min": 20,
         "summary": "Yeast, baking soda, baking powder and steam — four ways to make things rise, each with rules.",
         "intro": (

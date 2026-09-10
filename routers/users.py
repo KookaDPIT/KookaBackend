@@ -12,6 +12,7 @@ import serializers
 from serializers import iso_utc
 from database import get_db
 from deps import get_current_user, get_current_user_optional
+from services import allergens as allergen_svc
 from services import visibility
 
 router = APIRouter(tags=["users"])
@@ -30,6 +31,13 @@ def _dismissed_activity(user) -> set:
     iar ascunderea nu trebuie să șteargă rețeta sau recenzia de dedesubt."""
     raw = _load_settings(user).get("hiddenActivity")
     return set(raw) if isinstance(raw, list) else set()
+
+
+@router.get("/allergens")
+def allergen_catalog():
+    """Vocabularul de alergeni pe care îl bifezi la înregistrare și în setări.
+    Trimis de backend ca lista să fie una singură pe ambele capete."""
+    return {"allergens": allergen_svc.table()}
 
 
 @router.get("/me")
@@ -76,6 +84,14 @@ def update_me(
         if taken:
             raise HTTPException(400, "Emailul este deja folosit")
         payload["email"] = new_email
+
+    # Alergiile vin fie ca listă bifată, fie ca șir vechi separat prin virgulă;
+    # coloana stochează întotdeauna cheile canonice, ca filtrarea să nu depindă
+    # de cum a scris cineva „tree nuts".
+    if "allergies" in payload:
+        raw = payload["allergies"]
+        values = raw if isinstance(raw, list) else str(raw).split(",")
+        payload["allergies"] = allergen_svc.serialize_user(values)
 
     for field, value in payload.items():
         setattr(user, field, value)
@@ -491,3 +507,91 @@ def unblock_user(
     ).delete()
     db.commit()
     return {"blocked": False}
+
+
+# ---------- clasamente ----------
+
+def _leaderboard_row(db: Session, u: models.User, position: int, viewer):
+    from services import ranks
+
+    return {
+        "position": position,
+        "id": u.id,
+        "username": u.username,
+        "full_name": u.full_name,
+        "avatar_url": u.avatar_url or "",
+        "xp_total": int(u.xp_total or 0),
+        "rank": ranks.progress_for_xp(u.xp_total),
+        "role": u.role,
+        "is_self": viewer is not None and u.id == viewer.id,
+    }
+
+
+def _mutual_follow_ids(db: Session, user_id: int) -> set:
+    """„Prietenii" = follow reciproc. Cine te-a urmărit înapoi, nu oricine
+    urmărești: altfel clasamentul „cu prietenii" ar fi o listă pe care ți-o
+    poți umple singur."""
+    following = {
+        row[0]
+        for row in db.query(models.Follow.following_id)
+        .filter(models.Follow.follower_id == user_id)
+        .all()
+    }
+    if not following:
+        return set()
+    followers = {
+        row[0]
+        for row in db.query(models.Follow.follower_id)
+        .filter(models.Follow.following_id == user_id)
+        .all()
+    }
+    return following & followers
+
+
+@router.get("/leaderboard")
+def leaderboard(
+    scope: str = "global",
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    viewer: models.User = Depends(get_current_user),
+):
+    """Clasamentul după XP — global sau doar între prieteni.
+
+    Poziția proprie se întoarce întotdeauna, chiar dacă e în afara paginii
+    afișate: întrebarea „pe ce loc sunt?" trebuie să aibă răspuns și de pe
+    locul 900.
+    """
+    limit = max(1, min(int(limit or 50), 100))
+    scope = "friends" if scope == "friends" else "global"
+
+    query = db.query(models.User).filter(models.User.is_active == True)  # noqa: E712
+    # conturile sancționate nu figurează în clasament cât ține sancțiunea
+    query = query.filter(
+        or_(
+            models.User.suspended_until == None,  # noqa: E711
+            models.User.suspended_until <= func.now(),
+        )
+    )
+
+    if scope == "friends":
+        friends = _mutual_follow_ids(db, viewer.id)
+        friends.add(viewer.id)
+        query = query.filter(models.User.id.in_(friends))
+
+    rows = query.order_by(
+        models.User.xp_total.desc(), models.User.created_at.asc()
+    ).all()
+
+    # blocările sunt simetrice: cine te-a blocat (sau invers) nu apare
+    hidden = visibility.hidden_author_ids(db, viewer)
+    rows = [u for u in rows if u.id not in hidden or u.id == viewer.id]
+
+    entries = [_leaderboard_row(db, u, i + 1, viewer) for i, u in enumerate(rows)]
+    me_entry = next((e for e in entries if e["is_self"]), None)
+
+    return {
+        "scope": scope,
+        "total": len(entries),
+        "entries": entries[:limit],
+        "me": me_entry,
+    }

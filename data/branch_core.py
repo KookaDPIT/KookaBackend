@@ -35,7 +35,7 @@ LESSONS = [
         ],
     },
     {
-        "slug": "knife-sharpening", "branch": "knife", "title": "Sharpening & Honing", "icon": "🪛",
+        "slug": "knife-sharpening", "branch": "knife", "title": "Sharpening & Honing", "icon": "🗡️",
         "req_tier": 1, "est_min": 20,
         "summary": "The difference between honing and sharpening, and why a dull knife is the dangerous one.",
         "intro": (
@@ -292,7 +292,7 @@ LESSONS = [
         ],
     },
     {
-        "slug": "heat-roasting", "branch": "heat", "title": "Roasting & Carryover", "icon": "🔆",
+        "slug": "heat-roasting", "branch": "heat", "title": "Roasting & Carryover", "icon": "🍠",
         "req_tier": 5, "est_min": 25,
         "summary": "Ovens lie, thermometers don't. Cook to temperature, pull early, let the stored heat finish the job.",
         "intro": (
