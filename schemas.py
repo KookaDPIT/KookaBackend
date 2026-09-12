@@ -157,6 +157,47 @@ class LessonAdminUpdate(BaseModel):
     prereqs: Optional[List[str]] = None
 
 
+# ---------- PLANIFICATOR ----------
+class ShoppingItemIn(BaseModel):
+    name: str
+    # text liber: „2", „500"; oamenii scriu și „o legătură", iar a forța un
+    # număr ar pierde informația
+    quantity: str = ""
+    unit: str = ""
+
+
+class ShoppingItemUpdate(BaseModel):
+    name: Optional[str] = None
+    quantity: Optional[str] = None
+    unit: Optional[str] = None
+    checked: Optional[bool] = None
+
+
+class MealPlanIn(BaseModel):
+    date: str                      # YYYY-MM-DD
+    title: str = ""
+    recipe_id: Optional[int] = None
+    slot: str = "dinner"           # breakfast | lunch | dinner | snack
+
+
+class MealPlanUpdate(BaseModel):
+    date: Optional[str] = None
+    title: Optional[str] = None
+    slot: Optional[str] = None
+
+
+# ---------- RAPORTĂRI ----------
+class ReportIn(BaseModel):
+    target_type: str               # recipe | forum_post | forum_comment
+    target_id: int
+    reason: str = "other"
+    details: str = ""
+
+
+class ReportAction(BaseModel):
+    action: str                    # resolve | dismiss
+
+
 # ---------- AI ----------
 class ChatTurn(BaseModel):
     """Un schimb din panoul de chat: `role` e "user" sau "ai"."""

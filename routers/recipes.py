@@ -102,7 +102,7 @@ def list_recipes(
     viewer: models.User = Depends(get_current_user_optional),
     q: str = Query("", description="căutare titlu/țară"),
     filter: str = Query(
-        "", description="recommended|under30|fridge|allergy_free|top_rated"
+        "", description="recommended|under30|fridge|allergy_free|top_rated|random"
     ),
     pantry: str = Query("", description="ingrediente din frigider, separate prin virgulă"),
     limit: int = Query(20, le=100),
@@ -125,7 +125,12 @@ def list_recipes(
     if filter == "under30":
         query = query.filter(models.Recipe.duration_min <= 30, models.Recipe.duration_min > 0)
 
-    if filter == "top_rated":
+    if filter == "random":
+        # `func.random()` există și pe Postgres, și pe SQLite; `func.rand()`
+        # (MySQL) nu ne interesează. E plasa de siguranță a feed-ului: mai bine
+        # câteva rețete la întâmplare decât un ecran gol.
+        query = query.order_by(func.random())
+    elif filter == "top_rated":
         # ordonăm după rating mediu
         avg = func.coalesce(func.avg(models.Review.rating), 0)
         query = (
@@ -168,31 +173,30 @@ def get_recipe(
     if recipe.author_id in visibility.hidden_author_ids(db, viewer):
         raise HTTPException(404, "Rețeta nu există")
 
-    # Rank gating: rețetele peste rank-ul tău nu se deschid. Autorul și echipa
-    # de moderare trec întotdeauna — altfel nu și-ar putea vedea propria rețetă.
+    # Rank: o rețetă peste rank-ul tău se deschide și se poate găti. Blocarea
+    # dură (403) însemna că nici nu vedeai ce ai de câștigat gătind mai mult,
+    # iar o rețetă „prea grea" nu e periculoasă — e doar mai grea. Trimitem
+    # totuși ce rank cere, ca interfața să te întrebe „ești sigur?" la Gătește.
     recipe_rank = ranks.normalize_recipe_rank(recipe.rank, recipe.difficulty)
-    if not (staff or mine) and not ranks.can_access_recipe(
+    # Deliberat fără excepția pentru moderatori: asta nu mai e o permisiune, e
+    # o atenționare despre dificultate, iar dificultatea nu ține de rol. Doar
+    # autorul e scutit — el știe ce a scris.
+    above_rank = not mine and not ranks.can_access_recipe(
         viewer.xp_total if viewer else 0, recipe_rank
-    ):
-        required = ranks.RANK_BY_ID.get(recipe_rank, {}).get("name", recipe_rank)
-        raise HTTPException(
-            403,
-            {
-                "message": f"Rețeta cere rank-ul {required}.",
-                "required_rank": recipe_rank,
-                "required_rank_name": required,
-                "your_rank": ranks.progress_for_xp(viewer.xp_total if viewer else 0),
-                "recipe": {
-                    "id": recipe.id,
-                    "title": recipe.title,
-                    "image_url": recipe.image_url or "",
-                },
-            },
-        )
+    )
 
     data = serializers.recipe_to_dict(db, recipe, full=True, viewer=viewer)
     data["can_moderate"] = staff
     data["is_hidden"] = recipe.moderation_status == "hidden"
+    data["above_rank"] = above_rank
+    if above_rank:
+        data["rank_warning"] = {
+            "required_rank": recipe_rank,
+            "required_rank_name": ranks.RANK_BY_ID.get(recipe_rank, {}).get(
+                "name", recipe_rank
+            ),
+            "your_rank": ranks.progress_for_xp(viewer.xp_total if viewer else 0),
+        }
     return data
 
 

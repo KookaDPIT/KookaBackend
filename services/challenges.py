@@ -138,9 +138,10 @@ def list_for_user(db: Session, user) -> list:
             "rank": row.rank,
             "rank_name": ranks.RANK_BY_ID.get(row.rank, {}).get("name", row.rank),
             "done": row.id in done,
-            # Rețetele peste rank-ul tău rămân blocate și ca provocare — altfel
-            # provocarea ar fi un ocol pe lângă regula de acces.
-            "locked": not ranks.can_access_recipe(user.xp_total, row.rank),
+            # Rețetele peste rank nu se mai blochează nicăieri (vezi
+            # routers/recipes.get_recipe), deci nici provocarea nu se blochează:
+            # spunem doar că e peste nivelul tău, ca să știi în ce intri.
+            "above_rank": not ranks.can_access_recipe(user.xp_total, row.rank),
             "recipe": {
                 "id": recipe.id,
                 "title": recipe.title,

@@ -516,6 +516,7 @@ def moderation_stats(
     posts_total = _count(db, models.ForumPost)
     posts_new = _count(db, models.ForumPost, models.ForumPost.created_at >= week)
     posts_hidden = _count(db, models.ForumPost, models.ForumPost.moderation_status == "hidden")
+    reports_open = _count(db, models.Report, models.Report.status == "open")
     comments_total = _count(db, models.ForumComment)
 
     reviews_total = _count(db, models.Review)
@@ -589,6 +590,7 @@ def moderation_stats(
             "flagged_recipes": recipes_flagged,
             "hidden_recipes": recipes_hidden,
             "hidden_posts": posts_hidden,
+            "open_reports": reports_open,
         },
         "accounts": {
             "suspended": users_suspended,
@@ -620,3 +622,279 @@ def moderation_stats(
             for u in newest
         ],
     }
+
+
+# ---------- recalcularea analizei AI ----------
+
+def _needs_analysis(recipe: models.Recipe) -> bool:
+    """A rămas rețeta fără nutriție sau fără alergeni?
+
+    Astea sunt exact câmpurile pe care se bazează filtrul „fără alergenii mei"
+    și avertismentul de pe pagina rețetei, deci „lipsește" înseamnă zero calorii
+    SAU listă de alergeni goală — nu amândouă.
+    """
+    if not (recipe.calories or 0):
+        return True
+    allergens = serializers._load_json(recipe.allergens, {})
+    if not allergens.get("contains") and not allergens.get("free"):
+        return True
+    nutrition = serializers._load_json(recipe.nutrition, [])
+    if not nutrition or all(not (n.get("value") or 0) for n in nutrition):
+        return True
+    return False
+
+
+def _analyze_one(db: Session, recipe: models.Recipe) -> dict:
+    """Rulează analiza pe o rețetă și scrie rezultatul.
+
+    Un singur loc pentru regulă, ca butonul de pe o rețetă și cel „pe toate" să
+    nu se poată comporta diferit. Întoarce {"state": ...}:
+      unavailable — analizorul n-a răspuns; NU s-a scris nimic
+      flagged     — modelul zice că nu e o rețetă reală; am marcat-o, n-am șters
+      updated     — nutriția și alergenii au fost rescriși
+    """
+    from services import ai as ai_service
+    import json as _json
+
+    analysis = ai_service.analyze_recipe(
+        title=recipe.title,
+        ingredients=serializers._load_json(recipe.ingredients, []),
+        steps=serializers._load_json(recipe.steps, []),
+        servings=recipe.servings,
+    )
+
+    # Analizorul indisponibil (sau limitat de rată) întoarce forma goală:
+    # zerouri, fără alergeni. La publicare e acceptabil — mai bine o rețetă fără
+    # nutriție decât nicio rețetă — dar aici ar șterge date bune peste care nu
+    # mai avem cum reveni. Refuzăm în loc să scriem.
+    if not analysis.get("ok"):
+        return {"state": "unavailable"}
+
+    # `valid=False` e o opinie despre conținut, nu despre nutriție: o semnalăm
+    # în coadă, dar nu ștergem ce aveam pe baza ei.
+    if not analysis["valid"]:
+        recipe.moderation_status = "flagged"
+        recipe.ai_notes = analysis.get("reason", "")
+        return {"state": "flagged", "reason": recipe.ai_notes}
+
+    recipe.nutrition = _json.dumps(analysis["nutrition"], ensure_ascii=False)
+    recipe.allergens = _json.dumps(analysis["allergens"], ensure_ascii=False)
+    recipe.calories = analysis["calories"]
+    return {"state": "updated"}
+
+
+@router.post("/recipes/{recipe_id}/analyze")
+def reanalyze_recipe(
+    recipe_id: int,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    """Recalculează nutriția și alergenii unei rețete.
+
+    Analiza rulează o singură dată, la publicare. Rețetele mai vechi decât
+    câmpurile de nutriție, cele importate, și cele salvate în minutele în care
+    Groq era indisponibil au rămas cu zerouri sau fără alergeni. De aici un
+    moderator le poate umple fără să ceară autorului să reediteze rețeta.
+    """
+    recipe = db.query(models.Recipe).filter(models.Recipe.id == recipe_id).first()
+    if not recipe:
+        raise HTTPException(404, "Rețeta nu există")
+
+    result = _analyze_one(db, recipe)
+    if result["state"] == "unavailable":
+        raise HTTPException(
+            503,
+            "Analiza AI nu e disponibilă acum. Încearcă din nou mai târziu — "
+            "nu am modificat rețeta.",
+        )
+
+    db.commit()
+    db.refresh(recipe)
+    return {
+        "ok": result["state"] == "updated",
+        "flagged": result["state"] == "flagged",
+        "reason": result.get("reason", ""),
+        "recipe": serializers.recipe_to_dict(db, recipe, full=True),
+    }
+
+
+# Cât procesăm într-un singur request. Ținut mic din două motive: un request
+# HTTP care rulează minute întregi cade pe orice proxy, iar nivelul gratuit Groq
+# dă 8000 de tokeni pe minut per model — un lot mare ar lua 429 la jumătate.
+# Frontend-ul apelează în buclă până când `remaining` ajunge 0.
+ANALYZE_BATCH = 5
+ANALYZE_BATCH_MAX = 15
+
+
+@router.post("/recipes/analyze-all")
+def reanalyze_all(
+    scope: str = Query("missing", description="missing|all"),
+    limit: int = Query(ANALYZE_BATCH, ge=1, le=ANALYZE_BATCH_MAX),
+    after_id: int = Query(0, ge=0, description="ultimul id procesat (cursor)"),
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    """Un lot din „reanalizează tot".
+
+    „missing" (implicit) atinge doar rețetele care chiar au nevoie — e ce vrei
+    după ce analizorul a fost căzut o vreme, și nu cheltuie tokeni pe rețete
+    care au deja date bune. „all" le reface pe toate.
+
+    `after_id` e cursorul: fără el, „all" ar relua la infinit primele `limit`
+    rețete, pentru că spre deosebire de „missing" nimic nu le scoate din listă
+    după ce au fost procesate. Apelantul trimite înapoi `last_id` primit.
+
+    Se oprește la prima rețetă pentru care analizorul nu răspunde și raportează
+    asta: la acel punct nimic din ce urmează n-ar reuși oricum, iar rețetele
+    deja procesate rămân salvate.
+    """
+    all_scope = scope == "all"
+    query = db.query(models.Recipe).order_by(models.Recipe.id.asc())
+    if all_scope and after_id:
+        query = query.filter(models.Recipe.id > after_id)
+    candidates = query.all()
+    if not all_scope:
+        candidates = [r for r in candidates if _needs_analysis(r)]
+
+    total = len(candidates)
+    batch = candidates[:limit]
+
+    updated, flagged = 0, 0
+    stopped = ""
+    last_id = after_id
+    for recipe in batch:
+        result = _analyze_one(db, recipe)
+        if result["state"] == "unavailable":
+            stopped = "unavailable"
+            break
+        if result["state"] == "flagged":
+            flagged += 1
+        else:
+            updated += 1
+        last_id = recipe.id
+        # commit rețetă cu rețetă: dacă analizorul cade la a treia, primele două
+        # rămân scrise în loc să se piardă tot lotul
+        db.commit()
+
+    processed = updated + flagged
+    return {
+        "scope": "all" if all_scope else "missing",
+        "processed": processed,
+        "updated": updated,
+        "flagged": flagged,
+        # câte mai sunt de făcut după lotul ăsta
+        "remaining": max(0, total - processed),
+        "total": total,
+        # cursorul pentru lotul următor (contează doar pentru „all")
+        "last_id": last_id,
+        "stopped": stopped,
+    }
+
+
+# ---------- coada de raportări ----------
+
+def _report_target(db: Session, report: models.Report):
+    """Ce anume a fost raportat, atât cât să poți decide fără să pleci de aici."""
+    if report.target_type == "recipe":
+        r = db.query(models.Recipe).filter(models.Recipe.id == report.target_id).first()
+        if r is None:
+            return None
+        return {
+            "kind": "recipe",
+            "id": r.id,
+            "title": r.title,
+            "excerpt": (r.description or "")[:200],
+            "image_url": r.image_url or "",
+            "author": serializers.author_mini(r.author),
+            "moderation_status": r.moderation_status,
+        }
+    if report.target_type == "forum_post":
+        p = (
+            db.query(models.ForumPost)
+            .filter(models.ForumPost.id == report.target_id)
+            .first()
+        )
+        if p is None:
+            return None
+        return {
+            "kind": "forum_post",
+            "id": p.id,
+            "title": p.title,
+            "excerpt": (p.body or "")[:200],
+            "image_url": "",
+            "author": serializers.author_mini(p.author),
+            "moderation_status": p.moderation_status,
+        }
+    if report.target_type == "forum_comment":
+        c = (
+            db.query(models.ForumComment)
+            .filter(models.ForumComment.id == report.target_id)
+            .first()
+        )
+        if c is None:
+            return None
+        return {
+            "kind": "forum_comment",
+            "id": c.id,
+            "title": f"#{c.post_id}",
+            "excerpt": (c.body or "")[:200],
+            "image_url": "",
+            "author": serializers.author_mini(c.author),
+            "post_id": c.post_id,
+            "moderation_status": "ok",
+        }
+    return None
+
+
+@router.get("/reports")
+def list_reports(
+    status_filter: str = Query("open", alias="status"),
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    query = db.query(models.Report)
+    if status_filter in ("open", "resolved", "dismissed"):
+        query = query.filter(models.Report.status == status_filter)
+    rows = query.order_by(models.Report.created_at.desc()).limit(200).all()
+
+    out = []
+    for report in rows:
+        target = _report_target(db, report)
+        reporter = (
+            db.query(models.User).filter(models.User.id == report.reporter_id).first()
+        )
+        out.append({
+            "id": report.id,
+            "target_type": report.target_type,
+            "target_id": report.target_id,
+            "reason": report.reason,
+            "details": report.details or "",
+            "status": report.status,
+            "created_at": iso_utc(report.created_at),
+            "reporter": serializers.author_mini(reporter),
+            # `None` înseamnă că obiectul a fost șters între timp — raportul
+            # rămâne în coadă ca să poată fi închis, dar spune ce s-a întâmplat
+            "target": target,
+        })
+    return out
+
+
+@router.post("/reports/{report_id}")
+def act_on_report(
+    report_id: int,
+    data: schemas.ReportAction,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    """„resolve" = am luat măsuri, „dismiss" = raportul nu ținea."""
+    report = db.query(models.Report).filter(models.Report.id == report_id).first()
+    if not report:
+        raise HTTPException(404, "Raportul nu există")
+    if data.action not in ("resolve", "dismiss"):
+        raise HTTPException(400, "Acțiune invalidă")
+
+    report.status = "resolved" if data.action == "resolve" else "dismissed"
+    report.handled_by = admin.id
+    report.handled_at = datetime.utcnow()
+    db.commit()
+    return {"status": report.status}

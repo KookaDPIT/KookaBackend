@@ -310,3 +310,68 @@ class ChatMessage(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     conversation = relationship("ChatConversation", back_populates="messages")
+
+
+# ---------- PLANIFICATOR: lista de cumpărături + calendarul de mese ----------
+class ShoppingItem(Base):
+    """O linie din lista de cumpărături.
+
+    Stătea în localStorage, deci exista doar în browserul în care ai adăugat-o:
+    puneai ingredientele de pe telefon și pe laptop lista era goală. Cantitatea
+    e păstrată ca text liber (`quantity` + `unit`) pentru că oamenii scriu „2",
+    „500 g" și „o legătură" — a o forța la un număr ar pierde informație.
+    """
+    __tablename__ = "shopping_items"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    name = Column(String, nullable=False)
+    quantity = Column(String, default="")      # „2", „500", gol = nespecificat
+    unit = Column(String, default="")          # „g", „ml", „buc"
+    checked = Column(Boolean, default=False)   # bifat în magazin
+    # de unde a venit: adăugat manual, dintr-o rețetă, sau cerut din chat
+    source = Column(String, default="manual")  # manual | recipe | ai
+    recipe_id = Column(Integer, ForeignKey("recipes.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MealPlanEntry(Base):
+    """O masă planificată într-o zi.
+
+    `recipe_id` e opțional: poți plănui „Ciorbă de la mama", care nu e o rețetă
+    din aplicație. Când există, pagina face legătura către rețetă și lista de
+    cumpărături poate prelua ingredientele.
+    """
+    __tablename__ = "meal_plan_entries"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    date = Column(String, index=True)          # YYYY-MM-DD (ora locală a celui care plănuiește)
+    slot = Column(String, default="dinner")    # breakfast | lunch | dinner | snack
+    title = Column(String, default="")
+    recipe_id = Column(Integer, ForeignKey("recipes.id"), nullable=True)
+    source = Column(String, default="manual")  # manual | recipe | ai
+    position = Column(Integer, default=0)      # ordinea în cadrul zilei
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ---------- RAPORTĂRI ----------
+class Report(Base):
+    """Un raport trimis de un utilizator despre o rețetă sau o postare.
+
+    Butonul „Report" exista în interfață și nu făcea nimic. Acum ajunge într-o
+    coadă pe care moderatorii o văd în consolă. Un singur raport deschis per
+    (raportor, obiect) — a apăsa de trei ori nu înseamnă trei semnalări.
+    """
+    __tablename__ = "reports"
+    __table_args__ = (
+        UniqueConstraint("reporter_id", "target_type", "target_id", name="uq_report_once"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    reporter_id = Column(Integer, ForeignKey("users.id"), index=True)
+    target_type = Column(String, index=True)   # recipe | forum_post | forum_comment
+    target_id = Column(Integer, index=True)
+    reason = Column(String, default="other")   # cheie fixă, vezi services/reports.py
+    details = Column(Text, default="")
+    status = Column(String, default="open", index=True)  # open | resolved | dismissed
+    handled_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    handled_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

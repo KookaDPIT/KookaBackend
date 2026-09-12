@@ -8,7 +8,10 @@ load_dotenv()
 
 SECRET_KEY = os.getenv("JWT_SECRET")
 ALGORITHM = "HS256"
-TOKEN_EXPIRE_MINUTES = 60 * 24
+# 30 de zile. La 24 de ore, oricine deschidea aplicația a doua zi găsea
+# ecranul de autentificare — iar asta e o aplicație de bucătărie, nu o
+# bancă: costul unei reautentificări zilnice e mai mare decât riscul.
+TOKEN_EXPIRE_MINUTES = 60 * 24 * 30
 
 # --- parole ---
 def hash_password(password: str) -> str:

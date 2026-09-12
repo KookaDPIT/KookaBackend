@@ -26,7 +26,7 @@ import schemas
 import serializers
 from database import get_db
 from deps import get_current_user
-from services import ai, ranks, visibility
+from services import ai, planner, ranks, visibility
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -367,11 +367,49 @@ def _cards_for(db: Session, raw: str, user: models.User):
             r = by_id.get(rid)
             if r is not None and r.moderation_status == "ok":
                 recipes.append(serializers.recipe_to_dict(db, r, viewer=user))
-    return {"recipes": recipes, "nutrition": stored.get("nutrition")}
+    return {
+        "recipes": recipes,
+        "nutrition": stored.get("nutrition"),
+        # A record of what was done, not a live view: the card says what this
+        # turn added, even if the person has since ticked it off the list.
+        "plan": stored.get("plan"),
+    }
+
+
+def _plan_card(db: Session, applied: dict):
+    """Ce a scris asistentul de fapt — nu ce a cerut.
+
+    Modelul poate cere douăzeci de linii; card-ul arată doar rândurile care au
+    intrat în DB, ca omul să vadă exact ce s-a schimbat."""
+    if not applied or (not applied.get("shopping") and not applied.get("meals")):
+        return None
+    return {
+        "shopping": [
+            {
+                "name": i.name,
+                "quantity": i.quantity or "",
+                "unit": i.unit or "",
+            }
+            for i in applied.get("shopping", [])
+        ],
+        "meals": [
+            {
+                "date": m.date,
+                "slot": m.slot,
+                "title": m.title,
+                "recipe_id": m.recipe_id,
+            }
+            for m in applied.get("meals", [])
+        ],
+    }
 
 
 def _message_to_dict(db: Session, m: models.ChatMessage, user: models.User):
-    cards = _cards_for(db, m.cards, user) if m.role == "ai" else {"recipes": [], "nutrition": None}
+    cards = (
+        _cards_for(db, m.cards, user)
+        if m.role == "ai"
+        else {"recipes": [], "nutrition": None, "plan": None}
+    )
     return {
         "id": m.id,
         "role": m.role,
@@ -379,6 +417,7 @@ def _message_to_dict(db: Session, m: models.ChatMessage, user: models.User):
         "has_photo": bool(m.has_photo),
         "recipes": cards["recipes"],
         "nutrition": cards["nutrition"],
+        "plan": cards.get("plan"),
         "created_at": serializers.iso_utc(m.created_at),
     }
 
@@ -497,9 +536,23 @@ def send_message(
         catalogue=_accessible_recipes(db, user, message),
         image_data_uri=image or None,
         want_title=is_new,
+        # what is already on their list and in their calendar, so "add what I
+        # need" does not duplicate half of it
+        planner_lines=planner.summarize_for_model(db, user),
     )
 
-    cards = {"recipes": answer["recipe_ids"], "nutrition": answer["nutrition"]}
+    # The assistant can write to the shopping list and the meal plan. Every
+    # field is re-validated inside services/planner.py, which is the same code
+    # the buttons on the planner page go through — so a hallucinated recipe id
+    # or an impossible date turns into a plain title or today, never a bad row.
+    applied = planner.apply_ai_plan(db, user, answer.get("plan"))
+    plan_card = _plan_card(db, applied)
+
+    cards = {
+        "recipes": answer["recipe_ids"],
+        "nutrition": answer["nutrition"],
+        "plan": plan_card,
+    }
     ai_msg = models.ChatMessage(
         conversation_id=convo.id,
         role="ai",

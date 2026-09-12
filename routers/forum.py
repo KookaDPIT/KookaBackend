@@ -345,12 +345,16 @@ def get_post(
     post.views = (post.views or 0) + 1
     db.commit()
 
-    comments = (
-        db.query(models.ForumComment)
-        .filter(models.ForumComment.post_id == post_id)
-        .order_by(models.ForumComment.created_at.asc())
-        .all()
+    # blocarea taie și comentariile — vezi services/visibility.py
+    hidden_authors = visibility.hidden_author_ids(db, viewer)
+    comment_query = db.query(models.ForumComment).filter(
+        models.ForumComment.post_id == post_id
     )
+    if hidden_authors:
+        comment_query = comment_query.filter(
+            models.ForumComment.author_id.notin_(hidden_authors)
+        )
+    comments = comment_query.order_by(models.ForumComment.created_at.asc()).all()
     mine = _my_votes(db, viewer, [post_id])
     data = _post_to_dict(post, len(comments), mine.get(post_id, 0), with_body=True)
     data["comments"] = [_comment_to_dict(c, viewer) for c in comments]

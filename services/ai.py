@@ -52,7 +52,13 @@ def analyze_recipe(title: str, ingredients: list, steps: list, servings: int = 1
         "allergens": {"contains": [...], "free": [...]},
       }
     """
+    # `ok` says whether these numbers came from the model or are the empty
+    # shape we fall back to when Groq is unreachable. Publishing tolerates the
+    # empty shape — better a recipe with no nutrition than no recipe — but
+    # anything that OVERWRITES existing data must check it first, or a moderator
+    # pressing "re-analyse" while the key is missing would wipe good values.
     fallback = {
+        "ok": False,
         "valid": True,
         "reason": "",
         "calories": 0,
@@ -108,6 +114,7 @@ Only output the JSON."""
         data = json.loads(resp.choices[0].message.content)
         # normalizare defensivă
         return {
+            "ok": True,
             "valid": bool(data.get("valid", True)),
             "reason": str(data.get("reason", "")),
             "calories": int(data.get("calories", 0) or 0),
@@ -444,6 +451,25 @@ Estimating what someone ate:
 - If they describe food they have eaten and want to know the calories, fill in
   "nutrition" with your best estimate. Otherwise leave it null.
 
+The shopping list and the meal plan:
+- This person has a real shopping list and a real weekly meal calendar in the
+  app, and you can write to both. Their current contents are shown to you below
+  when they have any - never add something that is already on the list.
+- When they ask you to add ingredients ("put eggs and milk on my list", "add
+  what I need for that"), put them in "plan.shopping_add". One entry per
+  ingredient, with the amount split out: {"name": "flour", "quantity": "200",
+  "unit": "g"}. Leave quantity and unit empty when there is no sensible amount.
+- When they ask you to plan meals ("plan my weekend", "put that on Friday",
+  "give me a week of dinners"), put them in "plan.meals". Use real dates in
+  YYYY-MM-DD - today's date is given below, so work them out yourself. Use
+  "recipe_id" when the dish is one from the catalogue, and "title" when it is
+  not; a slot is one of breakfast, lunch, dinner, snack.
+- Only fill "plan" when they actually asked you to change something. Answering
+  "what should I cook this weekend?" is a conversation; "plan my weekend" is an
+  instruction. When in doubt, suggest in your text and leave "plan" empty.
+- After you fill "plan", say plainly what you added in your reply - the person
+  sees a summary card, but the words are what they read first.
+
 Always reply in English."""
 
 
@@ -455,13 +481,22 @@ def _chat_json_shape(want_title: bool) -> str:
 {{
 {title_line}  "reply": "<your answer, plain text>",
   "recipe_ids": [<ids from the catalogue, or empty>],
-  "nutrition": null
+  "nutrition": null,
+  "plan": null
 }}
 When you are estimating a meal, "nutrition" instead looks like:
 {{
   "total_kcal": <int>, "confidence": "low|medium|high",
   "items": [{{"name": "...", "detail": "2 slices", "kcal": <int>}}],
   "macros": {{"carbs_g": <int>, "fat_g": <int>, "protein_g": <int>}}
+}}
+When they asked you to change their shopping list or meal plan, "plan" instead
+looks like (either key may be an empty list):
+{{
+  "shopping_add": [{{"name": "flour", "quantity": "200", "unit": "g"}}],
+  "meals": [{{"date": "2026-09-19", "slot": "dinner",
+             "recipe_id": <id from the catalogue, or omit>,
+             "title": "<dish name when it is not one of ours>"}}]
 }}
 Only output the JSON."""
 
@@ -473,6 +508,7 @@ def chat_reply(
     catalogue: list = None,
     image_data_uri: str = None,
     want_title: bool = False,
+    planner_lines: list = None,
 ):
     """Un tur de conversație cu Kooka.
 
@@ -487,6 +523,7 @@ def chat_reply(
         "text": CHAT_FALLBACK,
         "recipe_ids": [],
         "nutrition": None,
+        "plan": None,
         "title": "",
         "ok": False,
     }
@@ -504,6 +541,10 @@ def chat_reply(
                 f"Their rank in the app is {user_ctx['rank']} - keep suggestions "
                 "at or below that level of difficulty."
             )
+
+    if planner_lines:
+        context_lines.append("")
+        context_lines.extend(planner_lines)
 
     if catalogue:
         context_lines.append("")
@@ -576,10 +617,16 @@ def chat_reply(
             ids.append(rid)
 
     text = str(data.get("reply") or "").strip()
+    # `plan` is a request to write to the person's list and calendar. It is
+    # passed straight through — every field is re-checked in services/planner.py
+    # before anything is stored, so a hallucinated recipe id or a date in 2019
+    # cannot reach the database from here.
+    plan = data.get("plan") if isinstance(data.get("plan"), dict) else None
     return {
         "text": text or CHAT_FALLBACK,
         "recipe_ids": ids,
         "nutrition": data.get("nutrition") if isinstance(data.get("nutrition"), dict) else None,
+        "plan": plan,
         "title": str(data.get("title") or "").strip()[:80],
         "ok": bool(text),
     }

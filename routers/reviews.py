@@ -13,7 +13,7 @@ import schemas
 import serializers
 from database import get_db
 from deps import get_current_user, get_current_user_optional
-from services import ai, challenges, learn
+from services import ai, challenges, learn, visibility
 
 router = APIRouter(tags=["reviews"])
 
@@ -122,9 +122,14 @@ def recent_reviews(
 ):
     """Cele mai recente recenzii din toată aplicația, cu info despre rețetă
     (pentru secțiunea „Fresh reviews" de pe Home)."""
+    # Blocarea trebuie să taie și recenziile, nu doar rețetele și postările:
+    # altfel blochezi pe cineva și îl citești în continuare pe prima pagină.
+    hidden = visibility.hidden_author_ids(db, viewer)
+    query = db.query(models.Review)
+    if hidden:
+        query = query.filter(models.Review.user_id.notin_(hidden))
     reviews = (
-        db.query(models.Review)
-        .order_by(models.Review.created_at.desc())
+        query.order_by(models.Review.created_at.desc())
         .limit(min(limit, 30))
         .all()
     )
@@ -137,12 +142,11 @@ def list_reviews(
     db: Session = Depends(get_db),
     viewer: models.User = Depends(get_current_user_optional),
 ):
-    reviews = (
-        db.query(models.Review)
-        .filter(models.Review.recipe_id == recipe_id)
-        .order_by(models.Review.created_at.desc())
-        .all()
-    )
+    hidden = visibility.hidden_author_ids(db, viewer)
+    review_query = db.query(models.Review).filter(models.Review.recipe_id == recipe_id)
+    if hidden:
+        review_query = review_query.filter(models.Review.user_id.notin_(hidden))
+    reviews = review_query.order_by(models.Review.created_at.desc()).all()
     avg, count, _ = serializers.recipe_stats(db, recipe_id)
     can_review = False
     my_review = None

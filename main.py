@@ -94,7 +94,10 @@ app.add_middleware(
 )
 
 # ---------- Routere pe feature ----------
-from routers import recipes, reviews, users, search, daily, uploads, admin, forum, learn, ai
+from routers import (
+    recipes, reviews, users, search, daily, uploads, admin, forum, learn, ai,
+    planner, reports,
+)
 
 app.include_router(learn.router)
 app.include_router(recipes.router)
@@ -106,6 +109,8 @@ app.include_router(uploads.router)
 app.include_router(admin.router)
 app.include_router(forum.router)
 app.include_router(ai.router)
+app.include_router(planner.router)
+app.include_router(reports.router)
 
 # Cele 50 de lecții vin din `data/lessons_seed.py` și se rescriu la fiecare
 # pornire, ca modificările de conținut să ajungă în DB fără migrare manuală.
