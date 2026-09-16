@@ -13,6 +13,8 @@ from serializers import iso_utc
 from database import get_db
 from deps import get_current_user, get_current_user_optional
 from services import allergens as allergen_svc
+from services import streaks as streak_svc
+from services import trophies as trophy_svc
 from services import visibility
 
 router = APIRouter(tags=["users"])
@@ -447,6 +449,67 @@ def unhide_all_activity(
     user.settings = json.dumps(prefs, ensure_ascii=False)
     db.commit()
     return {"hidden": []}
+
+
+# ---------- streak-uri ----------
+
+@router.get("/me/streaks")
+def my_streaks(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Cele patru streak-uri ale userului curent.
+
+    Endpoint separat de /me pentru că se calculează din istoric (trei interogări
+    peste tabele de evenimente), iar /me e cerut la fiecare încărcare de pagină.
+    """
+    return streak_svc.for_user(db, user)
+
+
+@router.get("/users/{user_id}/streaks")
+def user_streaks(
+    user_id: int,
+    db: Session = Depends(get_db),
+    viewer: models.User = Depends(get_current_user_optional),
+):
+    """Aceleași streak-uri, pe profilul public — sub aceleași reguli de
+    confidențialitate ca restul profilului."""
+    u = db.query(models.User).filter(models.User.id == user_id).first()
+    if not u or not visibility.can_see_user(db, u, viewer):
+        raise HTTPException(404, "Utilizatorul nu există")
+    if not serializers.can_view_profile(db, u, viewer):
+        raise HTTPException(403, "Profil privat")
+    return streak_svc.for_user(db, u)
+
+
+# ---------- trofee ----------
+
+@router.get("/me/trophies")
+def my_trophies(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Toate trofeele cu starea lor, plus totalurile pe categorii.
+
+    Cele ascunse pe care nu le ai vin cu numele și descrierea golite — asta e
+    tot rostul lor, iar dacă textul ar circula prin API oricine ar putea citi
+    lista din DevTools.
+    """
+    return trophy_svc.evaluate(db, user)
+
+
+@router.get("/users/{user_id}/trophies")
+def user_trophies(
+    user_id: int,
+    db: Session = Depends(get_db),
+    viewer: models.User = Depends(get_current_user_optional),
+):
+    u = db.query(models.User).filter(models.User.id == user_id).first()
+    if not u or not visibility.can_see_user(db, u, viewer):
+        raise HTTPException(404, "Utilizatorul nu există")
+    if not serializers.can_view_profile(db, u, viewer):
+        raise HTTPException(403, "Profil privat")
+    return trophy_svc.evaluate(db, u)
 
 
 # ---------- blocări ----------

@@ -8,6 +8,8 @@ import json
 
 from dotenv import load_dotenv
 
+from services import courses
+
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -50,6 +52,7 @@ def analyze_recipe(title: str, ingredients: list, steps: list, servings: int = 1
         "calories": int,        # kcal per porție
         "nutrition": [...],     # structura de gauge-uri
         "allergens": {"contains": [...], "free": [...]},
+        "course": str,          # tipul felului (services/courses.COURSE_IDS)
       }
     """
     # `ok` says whether these numbers came from the model or are the empty
@@ -64,6 +67,7 @@ def analyze_recipe(title: str, ingredients: list, steps: list, servings: int = 1
         "calories": 0,
         "nutrition": _EMPTY_NUTRITION,
         "allergens": {"contains": [], "free": []},
+        "course": "",
     }
 
     client = _client()
@@ -80,13 +84,17 @@ Ingredients:
 Steps:
 {chr(10).join(f'{n+1}. ' + s for n, s in enumerate(step_texts))}
 
-Do two things:
+Do three things:
 1. Decide if this is a genuine food recipe. Set "valid": false ONLY for clear abuse —
    spam, gibberish/random characters, offensive content, or non-food / dangerous
    (non-edible) instructions. Do NOT reject a real recipe just because it is short,
    incomplete, missing some ingredients, or imperfectly written — those are still
    "valid": true. Give a short "reason" only when you set valid=false.
 2. Estimate nutrition PER SERVING and detect allergens.
+3. Classify what KIND of dish this is, choosing exactly one id from this closed
+   list: {COURSE_LIST}. Pick the one a diner would use, not the one the
+   ingredients suggest: a chocolate cake is "dessert", not "bakery". Use "main"
+   when nothing else fits.
 
 Return STRICT JSON with exactly this shape:
 {{
@@ -100,9 +108,10 @@ Return STRICT JSON with exactly this shape:
     {{"key":"carb","label":"Carbs","value":<int>,"unit":"g","max":260}},
     {{"key":"salt","label":"Salt","value":<number>,"unit":"g","max":6}}
   ],
-  "allergens": {{"contains": ["Gluten","Eggs"], "free": ["Nuts","Fish"]}}
+  "allergens": {{"contains": ["Gluten","Eggs"], "free": ["Nuts","Fish"]}},
+  "course": "dessert"
 }}
-Only output the JSON."""
+Only output the JSON.""".replace("{COURSE_LIST}", ", ".join(courses.COURSE_IDS))
 
     try:
         resp = client.chat.completions.create(
@@ -120,6 +129,10 @@ Only output the JSON."""
             "calories": int(data.get("calories", 0) or 0),
             "nutrition": data.get("nutrition") or _EMPTY_NUTRITION,
             "allergens": data.get("allergens") or {"contains": [], "free": []},
+            # Un id inventat de model e la fel de inutil ca unul lipsă: cădem
+            # pe euristica din titlu, care măcar respectă vocabularul.
+            "course": courses.normalize(data.get("course", ""))
+            or courses.guess(title, ingredients),
         }
     except Exception:
         return fallback

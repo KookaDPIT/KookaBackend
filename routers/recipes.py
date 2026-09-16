@@ -10,7 +10,7 @@ import schemas
 import serializers
 from database import get_db
 from deps import get_current_user, get_current_user_optional
-from services import ai, feed, ranks, visibility
+from services import ai, courses, feed, ranks, visibility
 
 router = APIRouter(prefix="/recipes", tags=["recipes"])
 
@@ -43,6 +43,21 @@ def create_recipe(
     ingredients = tr["ingredients"]
     steps = tr["steps"]
 
+    # Ce a scris autorul, exact cum a scris. Se păstrează doar când chiar s-a
+    # tradus: pentru o rețetă deja în engleză ar fi o a doua copie identică.
+    original = (
+        {
+            "title": data.title.strip(),
+            "description": data.description or "",
+            "ingredients": json.dumps(list(data.ingredients), ensure_ascii=False),
+            "steps": json.dumps(
+                [s.model_dump(exclude_none=True) for s in data.steps], ensure_ascii=False
+            ),
+        }
+        if tr["translated"]
+        else {"title": "", "description": "", "ingredients": "", "steps": ""}
+    )
+
     # ---- analiză AI: nutriție + moderare (pe textul deja în engleză) ----
     analysis = ai.analyze_recipe(
         title=title,
@@ -66,9 +81,20 @@ def create_recipe(
         duration_min=data.duration_min,
         difficulty=data.difficulty,
         rank=ranks.normalize_recipe_rank(data.rank, data.difficulty),
+        # Ce alege autorul are prioritate; analizorul completează când n-a ales
+        # nimic, iar euristica din titlu e ultima plasă.
+        course=(
+            courses.normalize(getattr(data, "course", ""))
+            or courses.normalize(analysis.get("course", ""))
+            or courses.guess(title, ingredients, description)
+        ),
         ingredients=json.dumps(ingredients, ensure_ascii=False),
         steps=json.dumps(steps, ensure_ascii=False),
         source_language=tr["language"],
+        original_title=original["title"],
+        original_description=original["description"],
+        original_ingredients=original["ingredients"],
+        original_steps=original["steps"],
         nutrition=json.dumps(analysis["nutrition"], ensure_ascii=False),
         allergens=json.dumps(analysis["allergens"], ensure_ascii=False),
         calories=analysis["calories"],
@@ -105,6 +131,10 @@ def list_recipes(
         "", description="recommended|under30|fridge|allergy_free|top_rated|random"
     ),
     pantry: str = Query("", description="ingrediente din frigider, separate prin virgulă"),
+    course: str = Query("", description="tipuri de fel, separate prin virgulă (services/courses)"),
+    meal: str = Query("", description="breakfast|lunch|dinner|snack"),
+    kcal_min: int = Query(0, ge=0, description="kcal per porție, minim"),
+    kcal_max: int = Query(0, ge=0, description="kcal per porție, maxim (0 = fără plafon)"),
     limit: int = Query(20, le=100),
     offset: int = 0,
 ):
@@ -121,6 +151,8 @@ def list_recipes(
                 func.lower(models.Recipe.origin).like(like),
             )
         )
+
+    query = courses.apply_facets(query, models.Recipe, course, meal, kcal_min, kcal_max)
 
     if filter == "under30":
         query = query.filter(models.Recipe.duration_min <= 30, models.Recipe.duration_min > 0)
@@ -224,6 +256,12 @@ def update_recipe(
         recipe.rank = ranks.normalize_recipe_rank(
             payload.get("rank", recipe.rank), recipe.difficulty
         )
+    # Un curs invalid nu suprascrie unul bun: mai bine rămâne ce era decât să
+    # dispară rețeta din filtrul în care stătea.
+    if "course" in payload:
+        picked = courses.normalize(payload["course"])
+        if picked:
+            recipe.course = picked
     if "image_url" in payload:
         recipe.image_url = payload["image_url"]
     if "images" in payload:
@@ -239,6 +277,14 @@ def update_recipe(
     # Editarea poate introduce text într-o altă limbă (sau poate readuce rețeta
     # la engleză), deci retraducem ori de câte ori s-a atins conținutul.
     if recompute or "title" in payload or "description" in payload:
+        # Ce e în `recipe` acum e ce a trimis autorul la editare, deci e
+        # originalul — îl reținem ÎNAINTE de a-l suprascrie cu traducerea.
+        was = {
+            "title": recipe.title,
+            "description": recipe.description or "",
+            "ingredients": recipe.ingredients or "[]",
+            "steps": recipe.steps or "[]",
+        }
         tr = ai.translate_recipe(
             title=recipe.title,
             description=recipe.description or "",
@@ -250,6 +296,18 @@ def update_recipe(
         recipe.ingredients = json.dumps(tr["ingredients"], ensure_ascii=False)
         recipe.steps = json.dumps(tr["steps"], ensure_ascii=False)
         recipe.source_language = tr["language"]
+        if tr["translated"]:
+            recipe.original_title = was["title"]
+            recipe.original_description = was["description"]
+            recipe.original_ingredients = was["ingredients"]
+            recipe.original_steps = was["steps"]
+        else:
+            # Editată înapoi în engleză: golim originalul, altfel butonul ar
+            # oferi „vezi originalul" și ar arăta textul de acum două versiuni.
+            recipe.original_title = ""
+            recipe.original_description = ""
+            recipe.original_ingredients = ""
+            recipe.original_steps = ""
         recompute = True
 
     if recompute:

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 from sqlalchemy import text, func
 from pydantic import BaseModel, EmailStr
@@ -70,6 +70,23 @@ _MIGRATIONS = [
     "UPDATE recipes SET rank = 'silver'   WHERE (rank IS NULL OR rank = '') AND difficulty = 'medium'",
     "UPDATE recipes SET rank = 'platinum' WHERE (rank IS NULL OR rank = '') AND difficulty = 'hard'",
     "UPDATE recipes SET rank = 'copper'   WHERE rank IS NULL OR rank = ''",
+    "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS course VARCHAR DEFAULT ''",
+    # ---- textul original al autorului, păstrat lângă traducere ----
+    "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS original_title VARCHAR DEFAULT ''",
+    "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS original_description TEXT DEFAULT ''",
+    "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS original_ingredients TEXT DEFAULT ''",
+    "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS original_steps TEXT DEFAULT ''",
+    # ---- Istoricul gătirilor (cook_logs) ----
+    # Tabela e creată de metadata.create_all; asta o populează O SINGURĂ DATĂ
+    # din ce știam deja, ca streak-urile și trofeele să nu pornească de la zero
+    # pentru conturile existente. `saved_recipes` reține doar ultima gătire per
+    # rețetă, deci recuperăm o linie per pereche, nu istoricul complet — atât se
+    # poate reconstrui onest. XP-ul trecut era 20 fix, indiferent de rank.
+    """INSERT INTO cook_logs (user_id, recipe_id, rank, xp_awarded, times_cooked, cooked_at)
+       SELECT s.user_id, s.recipe_id, COALESCE(r.rank, 'copper'), 20, 1, s.cooked_at
+       FROM saved_recipes s JOIN recipes r ON r.id = s.recipe_id
+       WHERE s.cooked_verified = TRUE AND s.cooked_at IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM cook_logs)""",
 ]
 # Rulăm fiecare migrare izolat: o coloană care există deja (sau un dialect care
 # nu suportă IF NOT EXISTS, ex. SQLite local) nu trebuie să blocheze pornirea.
@@ -78,7 +95,20 @@ for stmt in _MIGRATIONS:
         with engine.begin() as conn:
             conn.execute(text(stmt))
     except Exception:
-        pass
+        # SQLite (dezvoltarea locală) nu cunoaște `ADD COLUMN IF NOT EXISTS`, iar
+        # fără a doua încercare coloanele noi pur și simplu nu apăreau acolo: pe
+        # Render mergea, local rețetele rămâneau fără `course` și filtrul nou
+        # dădea „no such column". Reîncercăm fără clauză; dacă pică și asta,
+        # coloana chiar există deja (sau enunțul nu era un ADD COLUMN) și tăcem
+        # ca înainte.
+        retry = stmt.replace(" IF NOT EXISTS", "") if "IF NOT EXISTS" in stmt else ""
+        if not retry:
+            continue
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(retry))
+        except Exception:
+            pass
 
 app = FastAPI(title="Cooking App API")
 
@@ -96,6 +126,7 @@ app.add_middleware(
 # ---------- Routere pe feature ----------
 from routers import (
     recipes, reviews, users, search, daily, uploads, admin, forum, learn, ai,
+    bookmarks, cooking,
     planner, reports,
 )
 
@@ -104,6 +135,8 @@ app.include_router(recipes.router)
 app.include_router(reviews.router)
 app.include_router(users.router)
 app.include_router(search.router)
+app.include_router(bookmarks.router)
+app.include_router(cooking.router)
 app.include_router(daily.router)
 app.include_router(uploads.router)
 app.include_router(admin.router)
@@ -128,9 +161,96 @@ except Exception as exc:  # pornirea nu trebuie blocată de seed
     print(f"[learn] seed sărit: {exc}")
 
 
+# Rețetele de dinaintea coloanei `course` nu au tip, deci n-ar apărea sub niciun
+# filtru de tip — filtrul ar debuta pe un catalog care pare gol. Le clasificăm
+# o dată, euristic (services/courses.guess). Analizorul AI e mai bun și le
+# rescrie la următorul „recalculează"; asta e doar ca pornirea să nu fie goală.
+try:
+    from database import SessionLocal
+    from services import courses as courses_service
+    import serializers as _serializers
+
+    _course_db = SessionLocal()
+    try:
+        pending = (
+            _course_db.query(models.Recipe)
+            .filter((models.Recipe.course == "") | (models.Recipe.course.is_(None)))
+            .all()
+        )
+        for _r in pending:
+            _r.course = courses_service.guess(
+                _r.title,
+                _serializers._load_json(_r.ingredients, []),
+                _r.description or "",
+            )
+        if pending:
+            _course_db.commit()
+            print(f"[courses] {len(pending)} recipes classified heuristically")
+    finally:
+        _course_db.close()
+except Exception as exc:
+    print(f"[courses] backfill skipped: {exc}")
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ---------- OCR pentru date de expirare ----------
+# Tesseract rulează în container (vezi Dockerfile). Dacă binarul lipsește —
+# rulare locală fără Docker — endpointul întoarce 503, restul aplicației merge.
+
+MAX_OCR_UPLOAD = 8 * 1024 * 1024  # 8 MB; peste asta consumăm RAM degeaba
+
+
+@app.get("/ocr/health")
+def ocr_health():
+    """Verifică dacă binarul Tesseract e disponibil în container."""
+    try:
+        import pytesseract
+
+        return {"available": True, "version": str(pytesseract.get_tesseract_version())}
+    except Exception as exc:
+        return {"available": False, "error": str(exc)}
+
+
+@app.post("/ocr/expiry")
+async def ocr_expiry(
+    file: UploadFile = File(...),
+    viewer: models.User = Depends(deps.get_current_user_optional),
+):
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Fișierul trebuie să fie o imagine",
+        )
+
+    raw = await file.read()
+    if len(raw) > MAX_OCR_UPLOAD:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Imaginea depășește 8 MB",
+        )
+
+    # Import întârziat: fără el, lipsa lui pytesseract/Pillow ar bloca pornirea
+    # întregii aplicații, nu doar acest endpoint.
+    try:
+        from ocr import read_expiry
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"OCR indisponibil: {exc}",
+        )
+
+    try:
+        return read_expiry(raw)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"OCR a eșuat: {exc}",
+        )
+
 
 # ---------- Scheme pentru datele primite (request) ----------
 

@@ -22,6 +22,7 @@ class RecipeCreate(BaseModel):
     duration_min: int = 0
     difficulty: str = "easy"
     rank: str = ""                         # copper..chef; gol -> derivat din difficulty
+    course: str = ""                       # dessert/appetizer/main/…; gol -> ghicit
     ingredients: List[str] = Field(default_factory=list)
     steps: List[StepIn] = Field(default_factory=list)
     image_url: str = ""                    # cover (deja urcat pe ImageKit)
@@ -36,6 +37,7 @@ class RecipeUpdate(BaseModel):
     duration_min: Optional[int] = None
     difficulty: Optional[str] = None
     rank: Optional[str] = None
+    course: Optional[str] = None
     ingredients: Optional[List[str]] = None
     steps: Optional[List[StepIn]] = None
     image_url: Optional[str] = None

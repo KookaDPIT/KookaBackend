@@ -5,7 +5,7 @@ confirmat poza (cooked_verified). Îți poți edita/șterge propria recenzie."""
 import base64
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
 from sqlalchemy.orm import Session
 
 import models
@@ -13,7 +13,7 @@ import schemas
 import serializers
 from database import get_db
 from deps import get_current_user, get_current_user_optional
-from services import ai, challenges, learn, visibility
+from services import ai, challenges, learn, ranks, visibility
 
 router = APIRouter(tags=["reviews"])
 
@@ -32,6 +32,7 @@ def _saved(db: Session, user_id: int, recipe_id: int):
 @router.post("/recipes/{recipe_id}/cook/verify")
 async def verify_cook(
     recipe_id: int,
+    session_id: int = Query(0, description="sesiunea de cook-along, pentru trofee"),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
@@ -69,9 +70,58 @@ async def verify_cook(
         "can_review": bool(result["verified"]),
     }
 
+    # Închiderea sesiunii de cook-along. O poză respinsă nu o termină — poți
+    # încerca alta — dar se numără: „AI-ul ți-a comentat farfuria" e un trofeu.
+    session = None
+    if session_id:
+        session = (
+            db.query(models.CookSession)
+            .filter(
+                models.CookSession.id == session_id,
+                models.CookSession.user_id == user.id,
+            )
+            .first()
+        )
+    if session is not None:
+        if result["verified"]:
+            session.finished_at = datetime.utcnow()
+            # Ai terminat-o: un abandon de mai devreme din ACEEAȘI sesiune nu
+            # mai e un abandon, e o pauză.
+            session.gave_up_at = None
+        else:
+            session.verify_failures = (session.verify_failures or 0) + 1
+
     if result["verified"]:
         saved.cooked_at = datetime.utcnow()
-        gained = 20  # XP de bază pentru gătit
+
+        # XP-ul urmează rank-ul rețetei, nu o valoare fixă: 25 pentru Copper,
+        # 150 pentru Chef (services/ranks.COOK_XP_BY_RANK). Reluările primesc un
+        # sfert — vezi comentariul de acolo pentru de ce nu zero și nu tot.
+        recipe_rank = ranks.normalize_recipe_rank(recipe.rank, recipe.difficulty)
+        times_cooked = 1 + (
+            db.query(models.CookLog)
+            .filter(
+                models.CookLog.user_id == user.id,
+                models.CookLog.recipe_id == recipe_id,
+            )
+            .count()
+        )
+        cook_xp = ranks.cook_xp(recipe_rank, times_cooked)
+        gained = cook_xp
+
+        # Istoricul e separat de SavedRecipe, care păstrează doar ultima gătire:
+        # streak-urile și trofeele au nevoie de fiecare dată în parte.
+        db.add(models.CookLog(
+            user_id=user.id,
+            recipe_id=recipe_id,
+            rank=recipe_rank,
+            xp_awarded=cook_xp,
+            times_cooked=times_cooked,
+            cooked_at=saved.cooked_at,
+        ))
+        response["cook_xp"] = cook_xp
+        response["cook_rank"] = recipe_rank
+        response["times_cooked"] = times_cooked
 
         # O gătire confirmată poate încheia o provocare a zilei…
         challenge = challenges.complete_for_recipe(db, user, recipe_id)

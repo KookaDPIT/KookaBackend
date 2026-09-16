@@ -48,7 +48,10 @@ class Recipe(Base):
     origin = Column(String, default="")           # țara de origine (pașaport culinar)
     duration_min = Column(Integer, default=0)
     difficulty = Column(String, default="easy")
-    calories = Column(Integer, default=0)
+    calories = Column(Integer, default=0)       # kcal PER PORȚIE (nu pe total)
+    # Tipul felului: desert / aperitiv / fel principal / … Vocabular închis,
+    # vezi services/courses.py. Gol = neclasificată încă.
+    course = Column(String, default="", index=True)
     # Rank-ul rețetei (copper..chef, fără divizii). Înlocuiește easy/medium/hard
     # ca dificultate afișată; `difficulty` rămâne pentru compatibilitate.
     rank = Column(String, default="copper")
@@ -56,9 +59,19 @@ class Recipe(Base):
     images = Column(Text, default="")             # JSON: listă URL-uri galerie
     moderation_status = Column(String, default="ok")  # ok / flagged / hidden
     ai_notes = Column(Text, default="")           # motivul de la validarea AI
-    # Limba în care a scris autorul. Conținutul salvat e tradus în engleză;
-    # asta ne lasă să afișăm „Translated from Romanian" pe pagina rețetei.
+    # Limba în care a scris autorul. Conținutul de mai sus e mereu engleza —
+    # așa funcționează căutarea, analiza nutrițională și AI-ul, toate pe un
+    # singur limbaj.
     source_language = Column(String, default="en")
+    # …dar traducerea nu mai înseamnă că originalul se pierde. Rețeta se CITEȘTE
+    # în limba în care a fost scrisă; engleza apare doar dacă o ceri. Fără
+    # coloanele astea, un autor român publica o rețetă și apoi n-o mai găsea
+    # în propriile cuvinte nicăieri.
+    # Populate doar când chiar s-a tradus ceva (gol = rețeta era deja engleză).
+    original_title = Column(String, default="")
+    original_description = Column(Text, default="")
+    original_ingredients = Column(Text, default="")   # JSON
+    original_steps = Column(Text, default="")         # JSON
     is_daily_dish = Column(Boolean, default=False)  # Daily Global Dish
     author_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -92,6 +105,88 @@ class SavedRecipe(Base):
     cook_photo_url = Column(String, default="")   # dovada gătitului (ImageKit)
     cooked_at = Column(DateTime, nullable=True)   # când a fost confirmat gătitul
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class CookLog(Base):
+    """Câte o linie per gătire confirmată de AI.
+
+    `SavedRecipe` ține doar starea curentă a perechii (user, rețetă): un singur
+    `cooked_at`, suprascris la fiecare gătire. Asta e destul ca să știi *dacă*
+    ai gătit ceva, dar nu și *când* și de *câte ori* — exact ce cer streak-urile
+    („câte zile la rând ai gătit"), XP-ul redus la reluare și trofeele care
+    numără reluări, bucătării și zile. Deci ținem istoricul separat, iar
+    SavedRecipe rămâne ce era.
+
+    `rank` e copiat din rețetă la momentul gătirii: dacă un moderator schimbă
+    mai târziu rank-ul rețetei, XP-ul deja acordat rămâne explicabil.
+    """
+    __tablename__ = "cook_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    recipe_id = Column(Integer, ForeignKey("recipes.id"), index=True)
+    rank = Column(String, default="copper")
+    xp_awarded = Column(Integer, default=0)
+    # a câta oară gătește userul rețeta asta (1 = prima)
+    times_cooked = Column(Integer, default=1)
+    cooked_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class Bookmark(Base):
+    """Un semn de carte: „vreau să gătesc asta cândva".
+
+    Separat de `SavedRecipe` intenționat. SavedRecipe e starea gătitului
+    (gătită, verificată, când) și se creează singură când AI-ul confirmă poza;
+    un semn de carte e o intenție, pusă și scoasă de utilizator, care nu
+    înseamnă nimic despre gătit. Îmbinate, „scoate din listă" ar fi șters și
+    dovada că ai gătit rețeta.
+
+    Calendarul răspunde la „când", semnul de carte la „poate" — de aia există
+    amândouă.
+    """
+    __tablename__ = "bookmarks"
+    __table_args__ = (
+        UniqueConstraint("user_id", "recipe_id", name="uq_bookmark_pair"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    recipe_id = Column(Integer, ForeignKey("recipes.id"), index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class CookSession(Base):
+    """O încercare de gătit, de la „Începe gătitul" până la abandon sau poză.
+
+    CookLog spune ce ai gătit; asta spune CUM. Cât ți-a luat, de câte ori ai
+    cerut ajutor și la ce pași, dacă ai sărit cronometrele, dacă ai ieșit din
+    aplicație, de câte ori ți-a respins AI-ul poza, dacă ai renunțat.
+
+    Există pentru trofee. Aproape un sfert din listă („Speed Chef", „Yes Chef",
+    „Locked In Cookin'", „Quitter's Club", „One and Done", „Comeback Kid") sunt
+    întrebări despre desfășurarea unei gătiri, iar din starea finală — o linie
+    în CookLog — nu se poate reconstitui niciuna. Fără tabela asta ar fi trebuit
+    ori inventate date, ori tăiate trofeele.
+
+    O sesiune abandonată rămâne în DB: „am renunțat la rețeta asta și m-am
+    întors" e exact ce măsoară două dintre trofee.
+    """
+    __tablename__ = "cook_sessions"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    recipe_id = Column(Integer, ForeignKey("recipes.id"), index=True)
+    started_at = Column(DateTime, default=datetime.utcnow, index=True)
+    finished_at = Column(DateTime, nullable=True)     # poza confirmată
+    gave_up_at = Column(DateTime, nullable=True)      # a apăsat „renunț"
+    steps_total = Column(Integer, default=0)
+    # câți pași DISTINCȚI au primit o întrebare către AI (nu câte întrebări)
+    ai_steps = Column(Integer, default=0)
+    ai_asks = Column(Integer, default=0)
+    # secunde de la începerea sesiunii până la prima întrebare (-1 = niciuna)
+    first_ask_after = Column(Integer, default=-1)
+    timers_available = Column(Integer, default=0)     # pași care aveau cronometru
+    timers_started = Column(Integer, default=0)       # pași la care chiar l-ai pornit
+    left_app = Column(Boolean, default=False)         # a ieșit din filă/aplicație
+    verify_failures = Column(Integer, default=0)      # de câte ori AI-ul a respins poza
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 
 # ---------- LEARN (Secțiunea 3) ----------
 class Lesson(Base):
@@ -238,6 +333,25 @@ class UserBadge(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     badge_id = Column(Integer, ForeignKey("badges.id"))
     earned_at = Column(DateTime, default=datetime.utcnow)
+
+class EarnedTrophy(Base):
+    """Când a fost câștigat un trofeu.
+
+    Condiția în sine se re-evaluează la fiecare cerere (services/trophies.py) —
+    e sursa adevărului și nu se poate desincroniza. Rândul ăsta nu stochează
+    „are trofeul", ci „l-a luat la ora asta": fără el, un trofeu câștigat acum
+    două luni ar arăta ca proaspăt de fiecare dată când deschizi pagina, și
+    n-am ști niciodată dacă l-am anunțat deja.
+    """
+    __tablename__ = "earned_trophies"
+    __table_args__ = (
+        UniqueConstraint("user_id", "trophy_id", name="uq_earned_trophy"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    trophy_id = Column(String, index=True)   # cheia din services/trophies.CATALOGUE
+    earned_at = Column(DateTime, default=datetime.utcnow)
+
 
 # ---------- FOLLOW (Secțiunea 7 - urmărire utilizatori) ----------
 class Follow(Base):

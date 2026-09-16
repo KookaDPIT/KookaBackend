@@ -18,6 +18,11 @@ def _ranks():
     return ranks
 
 
+def _courses():
+    from services import courses
+    return courses
+
+
 def iso_utc(dt):
     """ISO cu marcaj de fus orar.
 
@@ -92,6 +97,7 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False,
     avg, count, saves = recipe_stats(db, r.id)
     rank = ranks.normalize_recipe_rank(getattr(r, "rank", ""), r.difficulty)
     rank_meta = ranks.RANK_BY_ID.get(rank, {})
+    course = _courses().normalize(getattr(r, "course", ""))
     # Alergenii circulă și pe card, nu doar pe detaliu: „Fără alergenii mei" e
     # un filtru de listă, iar un card fără ei n-ar putea purta avertismentul.
     allergen_data = _load_json(r.allergens, {"contains": [], "free": []})
@@ -115,7 +121,12 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False,
         # deschid. Rămân vizibile ca listing, ca să ai ce să țintești.
         "locked": viewer is not None
         and not ranks.can_access_recipe(viewer.xp_total, rank),
-        "calories": r.calories,
+        "calories": r.calories,          # kcal per porție
+        # Tipul felului. `course` poate fi gol (rețetă neclasificată încă) —
+        # interfața arată atunci pur și simplu niciun tag, nu „main" ghicit.
+        "course": course,
+        "course_name": _courses().COURSE_BY_ID.get(course, {}).get("name", ""),
+        "meals": _courses().meals_for(course),
         "image_url": r.image_url or "",
         "images": _load_json(r.images, []),
         "moderation_status": r.moderation_status,
@@ -149,9 +160,32 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False,
                 "source_language_name": _lang_name(
                     getattr(r, "source_language", "") or "en"
                 ),
+                # Textul autorului, în limba lui. Absent (None) pentru rețetele
+                # scrise direct în engleză și pentru cele publicate înainte să
+                # păstrăm originalul — interfața nu oferă atunci comutatorul.
+                "original": _original_block(r),
             }
         )
     return data
+
+
+def _original_block(r):
+    """Varianta netradusă, dacă există.
+
+    Câmpurile normale ale rețetei rămân engleza — pe ea se face căutarea,
+    analiza nutrițională și tot ce vede AI-ul. Asta e doar pentru citit.
+    """
+    title = (getattr(r, "original_title", "") or "").strip()
+    if not title:
+        return None
+    return {
+        "title": title,
+        "description": getattr(r, "original_description", "") or "",
+        "ingredients": _load_json(getattr(r, "original_ingredients", ""), []),
+        "steps": _load_json(getattr(r, "original_steps", ""), []),
+        "language": getattr(r, "source_language", "") or "",
+        "language_name": _lang_name(getattr(r, "source_language", "") or ""),
+    }
 
 
 def user_to_dict(db: Session, u: "models.User", viewer: "models.User" = None):

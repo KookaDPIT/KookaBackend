@@ -173,3 +173,45 @@ def normalize_recipe_rank(value: str, difficulty: str = "") -> str:
 def can_access_recipe(user_xp: int, recipe_rank: str) -> bool:
     """Rețetele peste rank-ul tău sunt blocate (decizie de produs, asumată)."""
     return tier_for_xp(user_xp) >= first_tier_of_rank(recipe_rank)
+
+
+# ---------- XP pentru o rețetă gătită ----------
+#
+# Era 20 XP fix, indiferent ce găteai: o rețetă Chef de trei ore valora exact
+# cât o omletă Copper. Acum scala urmează rank-ul rețetei.
+#
+# Calibrare: pragurile din TIER_XP presupun că lecțiile singure duc până la
+# Platinum III, iar gătitul e accelerare. Valorile de mai jos stau deliberat
+# sub XP-ul unei provocări zilnice de același rank (services/challenges.py:
+# 60..320) — provocarea e un bonus peste gătit, nu un înlocuitor. La 25 XP
+# rețeta, Copper I → Copper II (180 XP) cere ~7 feluri, ceea ce e un ritm de
+# învățare, nu de grind.
+COOK_XP_BY_RANK = {
+    "copper": 25,
+    "bronze": 40,
+    "silver": 60,
+    "gold": 85,
+    "platinum": 115,
+    "chef": 150,
+}
+
+# Cât din XP rămâne când gătești A DOUA oară (și mai departe) aceeași rețetă.
+#
+# Reluările sunt încurajate în altă parte (trofeele „Two's Company" și
+# „Hat-Trick Pony" le cer explicit), deci nu le putem da zero. Dar XP-ul plin la
+# fiecare reluare ar face din cea mai scurtă rețetă Chef un buton de farmat:
+# tot ce-ar mai conta ar fi de câte ori apeși. Un sfert păstrează reluarea
+# răsplătită fără să fie strategia optimă.
+REPEAT_COOK_XP_RATIO = 0.25
+
+
+def cook_xp(recipe_rank: str, times_cooked: int = 1) -> int:
+    """XP-ul pentru o gătire confirmată. `times_cooked` e a câta oară (1 = prima).
+
+    Minimul de 1 XP există ca o reluare să nu se rotunjească vreodată la zero —
+    „ai gătit ceva și n-ai primit nimic" citește ca un bug, nu ca o regulă.
+    """
+    base = COOK_XP_BY_RANK.get(normalize_recipe_rank(recipe_rank), COOK_XP_BY_RANK["copper"])
+    if times_cooked and times_cooked > 1:
+        return max(1, round(base * REPEAT_COOK_XP_RATIO))
+    return base

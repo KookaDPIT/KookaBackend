@@ -680,6 +680,13 @@ def _analyze_one(db: Session, recipe: models.Recipe) -> dict:
     recipe.nutrition = _json.dumps(analysis["nutrition"], ensure_ascii=False)
     recipe.allergens = _json.dumps(analysis["allergens"], ensure_ascii=False)
     recipe.calories = analysis["calories"]
+    # Tipul felului vine din aceeași trecere. Un răspuns fără curs valid nu
+    # șterge ce era: clasificarea euristică de la pornire e tot mai bună decât
+    # nimic, iar filtrul ar pierde rețeta.
+    from services import courses as _courses
+    picked = _courses.normalize(analysis.get("course", ""))
+    if picked:
+        recipe.course = picked
     return {"state": "updated"}
 
 
@@ -740,9 +747,11 @@ def reanalyze_all(
     după ce analizorul a fost căzut o vreme, și nu cheltuie tokeni pe rețete
     care au deja date bune. „all" le reface pe toate.
 
-    `after_id` e cursorul: fără el, „all" ar relua la infinit primele `limit`
-    rețete, pentru că spre deosebire de „missing" nimic nu le scoate din listă
-    după ce au fost procesate. Apelantul trimite înapoi `last_id` primit.
+    `after_id` e cursorul, folosit în ambele scopuri: fără el bucla ar relua la
+    infinit primele `limit` rețete — la „all" pentru că nimic nu le scoate din
+    listă, la „missing" pentru că o rețetă semnalată sau una care rămâne pe 0
+    calorii după analiză e în continuare candidată. Apelantul trimite înapoi
+    `last_id` primit.
 
     Se oprește la prima rețetă pentru care analizorul nu răspunde și raportează
     asta: la acel punct nimic din ce urmează n-ar reuși oricum, iar rețetele
@@ -750,7 +759,15 @@ def reanalyze_all(
     """
     all_scope = scope == "all"
     query = db.query(models.Recipe).order_by(models.Recipe.id.asc())
-    if all_scope and after_id:
+    # Cursorul se aplică în ambele scopuri, nu doar la „all".
+    #
+    # Fără el, „missing" relua la fiecare lot exact aceleași rețete din capul
+    # listei: o rețetă marcată `flagged` (sau una pentru care modelul întoarce
+    # onest 0 calorii) rămâne „fără date", deci rămâne candidată la infinit.
+    # Bucla din frontend le re-analiza pe alea până la plafonul de 400 de runde
+    # și nu ajungea niciodată la rețetele de mai jos — de aici rețete cu 0
+    # calorii pe care butonul „nu le lua".
+    if after_id:
         query = query.filter(models.Recipe.id > after_id)
     candidates = query.all()
     if not all_scope:
@@ -771,6 +788,8 @@ def reanalyze_all(
             flagged += 1
         else:
             updated += 1
+        # Avansăm cursorul chiar și pentru rețetele semnalate: au fost atinse,
+        # deci lotul următor trebuie să treacă mai departe.
         last_id = recipe.id
         # commit rețetă cu rețetă: dacă analizorul cade la a treia, primele două
         # rămân scrise în loc să se piardă tot lotul
