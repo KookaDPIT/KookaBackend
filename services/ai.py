@@ -75,6 +75,11 @@ def analyze_recipe(title: str, ingredients: list, steps: list, servings: int = 1
         return fallback
 
     step_texts = [s.get("text", "") if isinstance(s, dict) else str(s) for s in steps]
+    # Interpolat direct în f-string, nu printr-un `.replace` de după: un
+    # `{PLACEHOLDER}` scris într-un f-string e evaluat ca expresie la
+    # construirea șirului, deci pică pe NameError înainte ca `.replace` să apuce
+    # să ruleze. Asta a scos din funcțiune și publicarea, și editarea rețetelor.
+    course_list = ", ".join(courses.COURSE_IDS)
     prompt = f"""You are a culinary and nutrition expert. Analyze this user-submitted recipe.
 
 Title: {title}
@@ -92,7 +97,7 @@ Do three things:
    "valid": true. Give a short "reason" only when you set valid=false.
 2. Estimate nutrition PER SERVING and detect allergens.
 3. Classify what KIND of dish this is, choosing exactly one id from this closed
-   list: {COURSE_LIST}. Pick the one a diner would use, not the one the
+   list: {course_list}. Pick the one a diner would use, not the one the
    ingredients suggest: a chocolate cake is "dessert", not "bakery". Use "main"
    when nothing else fits.
 
@@ -111,7 +116,7 @@ Return STRICT JSON with exactly this shape:
   "allergens": {{"contains": ["Gluten","Eggs"], "free": ["Nuts","Fish"]}},
   "course": "dessert"
 }}
-Only output the JSON.""".replace("{COURSE_LIST}", ", ".join(courses.COURSE_IDS))
+Only output the JSON."""
 
     try:
         resp = client.chat.completions.create(
