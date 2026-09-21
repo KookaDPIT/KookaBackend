@@ -263,12 +263,19 @@ def _rank_catalogue(rows: list, message: str, limit: int = CATALOGUE_LIMIT):
         for r in rows:
             tokens = _keywords(f"{r['title']} {r.get('origin', '')}")
             haystack = f"{r['title']} {r.get('origin', '')}".lower()
+            # Ingredientele contează mai puțin decât titlul, dar contează: la o
+            # poză de frigider cuvintele sunt „egg", „spinach", „avocado", care
+            # nu apar în niciun titlu. Fără asta, catalogul trimis modelului
+            # erau pur și simplu cele mai noi 15 rețete, iar el le ignora.
+            pantry = (r.get("pantry_text") or "").lower()
             score = 0
             for w in words:
                 if w in haystack:
-                    score += 2                      # potrivire directă: „chicken"
+                    score += 3                      # potrivire directă: „chicken"
                 elif any(_same_stem(w, t) for t in tokens):
-                    score += 1                      # „italian" ~ „Italy"
+                    score += 2                      # „italian" ~ „Italy"
+                elif w in pantry:
+                    score += 1                      # apare printre ingrediente
             if score:
                 scored.append((score, r))
         scored.sort(key=lambda pair: -pair[0])
@@ -284,6 +291,15 @@ def _rank_catalogue(rows: list, message: str, limit: int = CATALOGUE_LIMIT):
                 if len(out) >= limit:
                     break
     return out
+
+
+def _load_ingredients(raw) -> list:
+    """Ingredientele unei rețete din coloana JSON, tolerant la orice."""
+    try:
+        parsed = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def _accessible_recipes(db: Session, user: models.User, message: str = ""):
@@ -325,6 +341,12 @@ def _accessible_recipes(db: Session, user: models.User, message: str = ""):
                 "saves": st.get("saves", 0),
                 "has_image": bool(r.image_url),
                 "has_description": bool(r.description),
+                # Doar pentru sortare. Nu intră în promptul modelului —
+                # ingredientele a 15 rețete ar fi mai mult text decât tot
+                # restul conversației la un loc.
+                "pantry_text": " ".join(
+                    str(i) for i in (_load_ingredients(r.ingredients))
+                ),
             }
         )
 
@@ -527,6 +549,17 @@ def send_message(
     )
 
     progress = ranks.progress_for_xp(user.xp_total or 0)
+
+    # O poză de frigider e o întrebare fără cuvinte, iar catalogul se alege după
+    # cuvinte. Așa că întâi întrebăm modelul ce vede, și abia apoi alegem ce
+    # rețete merită să-i arătăm. Fără pasul ăsta, la o poză primea cele mai noi
+    # 15 rețete — nimic de-a face cu ce e în poză — și răspundea din memorie,
+    # fără să recomande nimic din aplicație.
+    seen = ai.see_ingredients(image) if image else []
+    # Cuvintele din poză se adaugă la ce a scris omul: dacă a scris ceva, ce a
+    # scris rămâne valabil („ceva rapid"), doar că acum știm și ce are în casă.
+    catalogue_query = " ".join(x for x in [message, " ".join(seen)] if x).strip()
+
     answer = ai.chat_reply(
         message=message or "What do you see in this photo?",
         history=history,
@@ -534,8 +567,9 @@ def send_message(
             "name": user.full_name or user.username or "",
             "rank": progress.get("rank_name", ""),
         },
-        catalogue=_accessible_recipes(db, user, message),
+        catalogue=_accessible_recipes(db, user, catalogue_query),
         image_data_uri=image or None,
+        seen_ingredients=seen,
         want_title=is_new,
         ui_language=user.language or "en",
         # what is already on their list and in their calendar, so "add what I

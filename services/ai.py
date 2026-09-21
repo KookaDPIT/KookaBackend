@@ -599,6 +599,13 @@ Recommending recipes:
 - If nothing in the catalogue fits, say so plainly - "we don't have one for that
   yet" - and then help from your own cooking knowledge, with "recipe_ids": [].
   Do not pad the list with recipes that only vaguely relate.
+- A PHOTO OF INGREDIENTS (a fridge, a counter, a shopping bag) is a question
+  about the catalogue even when no words came with it. Say what you see, then
+  recommend the catalogue dishes those ingredients would make - the ingredients
+  we read out of the photo are listed for you below. Suggesting dishes from
+  memory while our own recipes for them sit unmentioned is the one thing this
+  answer must not do. Only if nothing in the catalogue can be made with what is
+  there do you fall back to your own ideas, and then you say so.
 
 Estimating what someone ate:
 - If they describe food they have eaten and want to know the calories, fill in
@@ -632,6 +639,51 @@ Language:
   card next to your words - but write everything around them in their language.
 - Ingredient names inside "plan.shopping_add" also go in their language: that
   list is read in a shop, by them."""
+
+
+def see_ingredients(image_data_uri: str) -> list:
+    """Ce alimente se văd în poză, ca listă de cuvinte în engleză.
+
+    O trecere separată, înaintea răspunsului propriu-zis, fiindcă altfel
+    catalogul de rețete se alege în orb: cel care alege ce rețete îi arătăm
+    modelului se uită la TEXTUL mesajului, iar la o poză de frigider textul e
+    gol. Rezultatul nu ajunge la om — e doar cheia după care sortăm catalogul,
+    și de-aia e în engleză, ca titlurile rețetelor din DB.
+
+    Pe orice eroare întoarce o listă goală: fără ea chatul răspunde exact ca
+    înainte, doar fără recomandări din aplicație.
+    """
+    client = _client()
+    if client is None or not image_data_uri:
+        return []
+
+    prompt = (
+        "List the food ingredients you can see in this photo. Only things that "
+        "can be cooked or eaten. Use plain English singular nouns, no amounts, "
+        "no adjectives, at most 20 of them. If you see no food, return an empty "
+        'list. Return STRICT JSON: {"ingredients": ["egg", "carrot", "spinach"]}'
+    )
+    try:
+        resp = client.chat.completions.create(
+            model=VISION_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": image_data_uri}},
+                    ],
+                }
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            max_tokens=250,
+        )
+        data = json.loads(resp.choices[0].message.content)
+        items = data.get("ingredients") or []
+        return [str(i).strip().lower() for i in items[:20] if str(i).strip()]
+    except Exception:
+        return []
 
 
 def _chat_json_shape(want_title: bool) -> str:
@@ -671,6 +723,7 @@ def chat_reply(
     want_title: bool = False,
     planner_lines: list = None,
     ui_language: str = "en",
+    seen_ingredients: list = None,
 ):
     """Un tur de conversație cu Kooka.
 
@@ -703,6 +756,15 @@ def chat_reply(
                 f"Their rank in the app is {user_ctx['rank']} - keep suggestions "
                 "at or below that level of difficulty."
             )
+
+    if seen_ingredients:
+        context_lines.append("")
+        context_lines.append(
+            "IN THE PHOTO - what we read out of the picture they just sent: "
+            + ", ".join(seen_ingredients)
+            + ". The catalogue below was chosen to match these, so look there "
+            "first for something they can cook tonight."
+        )
 
     if planner_lines:
         context_lines.append("")
