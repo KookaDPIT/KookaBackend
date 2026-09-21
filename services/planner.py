@@ -91,6 +91,7 @@ def shopping_to_dict(item: models.ShoppingItem) -> dict:
         "checked": bool(item.checked),
         "source": item.source or "manual",
         "recipe_id": item.recipe_id,
+        "expires_at": getattr(item, "expires_at", "") or "",
     }
 
 

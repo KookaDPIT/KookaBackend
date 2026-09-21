@@ -282,6 +282,10 @@ class ForumPost(Base):
     # Subforumul e limba în care scrii; subiectul îl dă tag-ul.
     language = Column(String, default="en", index=True)
     tag = Column(String, default="question", index=True)
+    # Pozele atașate postării, ca listă JSON de URL-uri ImageKit. Prima e și
+    # coperta tile-ului din listă — „ce-am gătit / cum arată" e jumătate din
+    # întrebările de pe forum, iar până acum se puteau descrie doar în cuvinte.
+    images = Column(Text, default="")
     moderation_status = Column(String, default="ok")  # ok / hidden (moderare)
     votes = Column(Integer, default=0)      # sumă cache-uită a ForumVote
     views = Column(Integer, default=0)
@@ -445,6 +449,10 @@ class ShoppingItem(Base):
     # de unde a venit: adăugat manual, dintr-o rețetă, sau cerut din chat
     source = Column(String, default="manual")  # manual | recipe | ai
     recipe_id = Column(Integer, ForeignKey("recipes.id"), nullable=True)
+    # Data de expirare citită de pe ambalaj, ca text ISO „YYYY-MM-DD".
+    # Text, nu Date: vine dintr-un OCR care mai și greșește, iar un șir se
+    # poate corecta cu mâna fără să pice o conversie. Gol = nu s-a scanat.
+    expires_at = Column(String, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -488,4 +496,28 @@ class Report(Base):
     status = Column(String, default="open", index=True)  # open | resolved | dismissed
     handled_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     handled_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ---------- TRADUCERI LA CERERE ----------
+class RecipeTranslation(Base):
+    """Rețeta, scrisă în altă limbă decât cea din `recipes`.
+
+    Conținutul din `recipes` rămâne engleza — pe ea se face căutarea, analiza
+    nutrițională și tot ce citește AI-ul, și nu vrem două adevăruri. Aici stă
+    doar ce vede cititorul când apasă „tradu", ca să nu plătim aceeași
+    traducere la fiecare deschidere a paginii. E un cache, nu o sursă: se poate
+    șterge oricând fără să se piardă nimic.
+    """
+    __tablename__ = "recipe_translations"
+    __table_args__ = (
+        UniqueConstraint("recipe_id", "language", name="uq_recipe_translation"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    recipe_id = Column(Integer, ForeignKey("recipes.id"), index=True)
+    language = Column(String, index=True)      # ISO 639-1
+    title = Column(String, default="")
+    description = Column(Text, default="")
+    ingredients = Column(Text, default="")     # JSON
+    steps = Column(Text, default="")           # JSON
     created_at = Column(DateTime, default=datetime.utcnow)

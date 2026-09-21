@@ -99,6 +99,7 @@ def ask_while_cooking(
         step_index=max(0, data.step_index),
         question=question,
         history=history,
+        ui_language=user.language or "en",
     )
     return {
         "text": answer["text"],
@@ -536,6 +537,7 @@ def send_message(
         catalogue=_accessible_recipes(db, user, message),
         image_data_uri=image or None,
         want_title=is_new,
+        ui_language=user.language or "en",
         # what is already on their list and in their calendar, so "add what I
         # need" does not duplicate half of it
         planner_lines=planner.summarize_for_model(db, user),

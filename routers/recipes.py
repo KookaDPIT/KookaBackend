@@ -73,6 +73,17 @@ def create_recipe(
             detail=f"Rețeta a fost respinsă de verificarea AI: {analysis['reason']}",
         )
 
+    # AI-ul n-a răspuns (cheie lipsă, model retras, Groq picat): `valid=True` de
+    # mai sus e valoarea implicită din fallback, nu un verdict. Rețeta se
+    # publică — nimeni nu-și pierde munca fiindcă ne-a picat un furnizor — dar
+    # intră în coada de moderare, ca s-o vadă un om. Altfel, cât timp AI-ul e
+    # jos, orice spam trece nevăzut.
+    unchecked = not analysis.get("ok")
+    moderation_status = "flagged" if unchecked else "ok"
+    ai_notes = analysis.get("reason", "")
+    if unchecked:
+        ai_notes = "Verificarea AI nu a putut rula la publicare — necesită verificare umană."
+
     recipe = models.Recipe(
         title=title,
         description=description,
@@ -100,8 +111,8 @@ def create_recipe(
         calories=analysis["calories"],
         image_url=data.image_url,
         images=json.dumps(data.images, ensure_ascii=False),
-        moderation_status="ok",
-        ai_notes=analysis.get("reason", ""),
+        moderation_status=moderation_status,
+        ai_notes=ai_notes,
         author_id=user.id,
     )
     db.add(recipe)
@@ -184,6 +195,108 @@ def list_recipes(
 
     recipes = query.offset(offset).limit(limit).all()
     return [serializers.recipe_to_dict(db, r, viewer=viewer) for r in recipes]
+
+
+# ==========================================================================
+#  TRADUCERE LA CERERE
+#  Rețeta se salvează în engleză și se citește în limba autorului. Asta e a
+#  treia variantă: limba CITITORULUI, și numai dacă o cere apăsând butonul.
+#  Nu se traduce nimic automat — ar însemna un apel la model pentru fiecare
+#  rețetă deschisă de oricine, pentru o traducere pe care majoritatea n-o vrea.
+# ==========================================================================
+
+@router.post("/{recipe_id}/translate")
+def translate_recipe_on_demand(
+    recipe_id: int,
+    lang: str = Query("", description="limba țintă, ISO 639-1"),
+    db: Session = Depends(get_db),
+    viewer: models.User = Depends(get_current_user),
+):
+    code = (lang or viewer.language or "en").strip().lower()[:2]
+    if not code.isalpha() or len(code) != 2:
+        raise HTTPException(400, "Limbă invalidă")
+
+    recipe = db.query(models.Recipe).filter(models.Recipe.id == recipe_id).first()
+    if not recipe:
+        raise HTTPException(404, "Rețeta nu există")
+
+    # Exact aceleași porți ca la deschiderea rețetei — altfel traducerea ar fi
+    # o portiță prin care se citește o rețetă ascunsă.
+    staff = visibility.is_staff(viewer)
+    mine = recipe.author_id == viewer.id
+    if recipe.moderation_status == "hidden" and not (staff or mine):
+        raise HTTPException(404, "Rețeta nu există")
+    if recipe.author_id in visibility.hidden_author_ids(db, viewer):
+        raise HTTPException(404, "Rețeta nu există")
+
+    source = {
+        "title": recipe.title,
+        "description": recipe.description or "",
+        "ingredients": json.loads(recipe.ingredients or "[]"),
+        "steps": json.loads(recipe.steps or "[]"),
+    }
+
+    # Cere traducerea în limba în care rețeta e deja scrisă: n-are ce traduce.
+    if code == "en":
+        return {"language": "en", "cached": False, "translated": False, **source}
+
+    cached = (
+        db.query(models.RecipeTranslation)
+        .filter(
+            models.RecipeTranslation.recipe_id == recipe.id,
+            models.RecipeTranslation.language == code,
+        )
+        .first()
+    )
+    if cached:
+        return {
+            "language": code,
+            "cached": True,
+            "translated": True,
+            "title": cached.title,
+            "description": cached.description or "",
+            "ingredients": json.loads(cached.ingredients or "[]"),
+            "steps": json.loads(cached.steps or "[]"),
+        }
+
+    result = ai.translate_into(
+        title=source["title"],
+        description=source["description"],
+        ingredients=source["ingredients"],
+        steps=source["steps"],
+        target=code,
+    )
+    if not result["ok"]:
+        # 503, nu 200 cu textul original: butonul trebuie să poată spune „n-a
+        # mers, încearcă din nou", nu să pară că a tradus și n-a schimbat nimic.
+        raise HTTPException(503, "Traducerea nu e disponibilă acum")
+
+    # Un cache, nu o sursă de adevăr: dacă scrierea pică, tot răspundem cu
+    # traducerea proaspătă și o vom recalcula data viitoare.
+    try:
+        db.add(
+            models.RecipeTranslation(
+                recipe_id=recipe.id,
+                language=code,
+                title=result["title"],
+                description=result["description"],
+                ingredients=json.dumps(result["ingredients"], ensure_ascii=False),
+                steps=json.dumps(result["steps"], ensure_ascii=False),
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    return {
+        "language": code,
+        "cached": False,
+        "translated": True,
+        "title": result["title"],
+        "description": result["description"],
+        "ingredients": result["ingredients"],
+        "steps": result["steps"],
+    }
 
 
 @router.get("/{recipe_id}")
@@ -317,7 +430,16 @@ def update_recipe(
             steps=json.loads(recipe.steps or "[]"),
             servings=recipe.servings,
         )
-        if analysis["valid"]:
+        if not analysis.get("ok"):
+            # Aceeași regulă ca la publicare: o editare pe care AI-ul n-a apucat
+            # s-o citească merge la moderare. Nu suprascriem nutriția cu forma
+            # goală din fallback — ar șterge date bune.
+            if (recipe.moderation_status or "ok") == "ok":
+                recipe.moderation_status = "flagged"
+                recipe.ai_notes = (
+                    "Verificarea AI nu a putut rula la editare — necesită verificare umană."
+                )
+        elif analysis["valid"]:
             recipe.nutrition = json.dumps(analysis["nutrition"], ensure_ascii=False)
             recipe.allergens = json.dumps(analysis["allergens"], ensure_ascii=False)
             recipe.calories = analysis["calories"]

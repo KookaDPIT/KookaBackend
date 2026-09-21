@@ -207,6 +207,21 @@ def language_name(code: str) -> str:
     return _LANG_NAMES.get((code or "").lower(), (code or "").upper())
 
 
+def _ui_language_line(code: str) -> str:
+    """Linia de sistem care spune modelului pe ce limbă să cadă înapoi.
+
+    Limba răspunsului o decide mesajul omului — el poate scrie în franceză cu
+    interfața pe engleză. Asta e doar plasa pentru „ok", „și acum?", „merci",
+    mesaje prea scurte ca să aibă o limbă.
+    """
+    code = (code or "en").lower()[:2]
+    return (
+        f"The interface this person is using is set to {language_name(code)} "
+        f"({code}). Reply in the language of THEIR MESSAGE; fall back to "
+        f"{language_name(code)} only when the message is too short to tell."
+    )
+
+
 def translate_recipe(title: str, description: str, ingredients: list, steps: list):
     """Detectează limba rețetei și o traduce în engleză dacă e nevoie.
 
@@ -312,6 +327,113 @@ Only output the JSON."""
         return original
 
 
+def translate_into(
+    title: str,
+    description: str,
+    ingredients: list,
+    steps: list,
+    target: str,
+):
+    """Traduce o rețetă ÎN limba cerută, la cerere.
+
+    Sora lui `translate_recipe`, dar în sens invers și pe alt declanșator: aia
+    rulează tăcut la publicare și scoate mereu engleză (ce se caută și ce
+    citește AI-ul), asta rulează doar când cineva apasă „tradu" și scoate limba
+    lui. Nimic din ce iese de aici nu înlocuiește textul rețetei în DB — se
+    salvează separat, ca o traducere, ca să n-o mai plătim a doua oară.
+
+    Întoarce {"ok", "language", "title", "description", "ingredients", "steps"};
+    `ok=False` înseamnă că nu s-a tradus nimic (AI indisponibil sau răspuns
+    inutilizabil) și apelantul trebuie să arate textul original.
+    """
+    code = (target or "").lower()[:2]
+    failed = {
+        "ok": False,
+        "language": code,
+        "title": title,
+        "description": description or "",
+        "ingredients": list(ingredients or []),
+        "steps": list(steps or []),
+    }
+    if not code:
+        return failed
+
+    client = _client()
+    if client is None:
+        return failed
+
+    payload = {
+        "title": title,
+        "description": description or "",
+        "ingredients": list(ingredients or []),
+        "steps": [
+            {
+                "text": (s.get("text", "") if isinstance(s, dict) else str(s)),
+                "label": (s.get("label", "") if isinstance(s, dict) else ""),
+            }
+            for s in (steps or [])
+        ],
+    }
+    target_name = language_name(code)
+
+    prompt = f"""You are a culinary translator. Translate this recipe into {target_name} ({code}).
+
+Recipe as JSON:
+{json.dumps(payload, ensure_ascii=False)}
+
+Rules:
+- Translate every text field into natural {target_name}, the way a cook in that
+  language would write it - not word for word.
+- Keep every quantity, unit and number exactly as given. Do not convert units.
+- Keep proper dish names (e.g. "ratatouille", "sarmale") in their own form.
+- Return the SAME number of ingredients and steps, in the SAME order.
+- If a field is already in {target_name}, return it unchanged.
+
+Return STRICT JSON with exactly this shape:
+{{
+  "title": "...",
+  "description": "...",
+  "ingredients": ["...", "..."],
+  "steps": [{{"text": "...", "label": "..."}}]
+}}
+Only output the JSON."""
+
+    try:
+        resp = client.chat.completions.create(
+            model=UTILITY_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+        )
+        data = json.loads(resp.choices[0].message.content)
+        new_ing = data.get("ingredients") or []
+        new_steps = data.get("steps") or []
+        # Aceeași verificare ca la traducerea spre engleză: dacă modelul a sărit
+        # sau a inventat linii nu le putem mapa peste original, iar o listă de
+        # ingrediente decalată față de pași e mai rea decât textul netradus.
+        if len(new_ing) != len(payload["ingredients"]) or len(new_steps) != len(payload["steps"]):
+            return failed
+
+        merged_steps = []
+        for src, tr in zip(steps or [], new_steps):
+            base = dict(src) if isinstance(src, dict) else {"text": str(src)}
+            base["text"] = str(tr.get("text", "") or base.get("text", ""))
+            if base.get("label"):
+                base["label"] = str(tr.get("label", "") or base["label"])
+            merged_steps.append(base)
+
+        return {
+            "ok": True,
+            "language": code,
+            "title": str(data.get("title") or title),
+            "description": str(data.get("description") or description or ""),
+            "ingredients": [str(i) for i in new_ing],
+            "steps": merged_steps,
+        }
+    except Exception:
+        return failed
+
+
 # ==========================================================================
 # COOK-ALONG: întrebări puse în timpul gătitului, cu contextul rețetei
 # ==========================================================================
@@ -381,14 +503,26 @@ Rules:
 - If they ask about a different step, say which step you mean.
 - If the recipe genuinely does not say, use standard cooking knowledge and say so
   briefly. Never invent an ingredient that is not in the list.
-- Always answer in English."""
+- LANGUAGE: reply in the SAME language the person wrote their question in. Work
+  it out from their message, not from the recipe - the recipe text is always
+  stored in English, so it tells you nothing about what they speak. If their
+  message is too short to tell ("ok", "si acum?"), use the interface language
+  given below. Never switch language mid-conversation unless they do."""
 
 
-def cook_answer(recipe: dict, step_index: int, question: str, history: list = None):
+def cook_answer(
+    recipe: dict,
+    step_index: int,
+    question: str,
+    history: list = None,
+    ui_language: str = "en",
+):
     """Răspunde la o întrebare pusă în timpul gătitului.
 
     `recipe` e dictul serializat al rețetei (full=True), `step_index` e pasul
     curent (0-based), `history` e lista {role, text} din panoul lateral.
+    `ui_language` e limba interfeței — folosită doar ca plasă când întrebarea
+    e prea scurtă ca să-i ghicești limba.
     """
     client = _client()
     if client is None:
@@ -396,6 +530,7 @@ def cook_answer(recipe: dict, step_index: int, question: str, history: list = No
 
     messages = [
         {"role": "system", "content": COOK_SYSTEM},
+        {"role": "system", "content": _ui_language_line(ui_language)},
         {"role": "system", "content": _recipe_context(recipe, step_index)},
     ]
     # ultimele câteva schimburi, ca să poată răspunde la „și acum?"
@@ -488,7 +623,15 @@ The shopping list and the meal plan:
 - After you fill "plan", say plainly what you added in your reply - the person
   sees a summary card, but the words are what they read first.
 
-Always reply in English."""
+Language:
+- Write "reply" in the SAME language the person just wrote to you in. Detect it
+  from their message; when it is too short to tell, use the interface language
+  given below. Titles you generate follow the same language as the reply.
+- The catalogue is stored in English. Keep recipe names exactly as they appear
+  there even when you are writing in another language - that is the name on the
+  card next to your words - but write everything around them in their language.
+- Ingredient names inside "plan.shopping_add" also go in their language: that
+  list is read in a shop, by them."""
 
 
 def _chat_json_shape(want_title: bool) -> str:
@@ -527,6 +670,7 @@ def chat_reply(
     image_data_uri: str = None,
     want_title: bool = False,
     planner_lines: list = None,
+    ui_language: str = "en",
 ):
     """Un tur de conversație cu Kooka.
 
@@ -550,7 +694,7 @@ def chat_reply(
     if client is None:
         return empty
 
-    context_lines = []
+    context_lines = [_ui_language_line(ui_language), ""]
     if user_ctx:
         who = user_ctx.get("name") or "this cook"
         context_lines.append(f"You are talking to {who}.")

@@ -38,6 +38,8 @@ _MIGRATIONS = [
     "ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS tag VARCHAR DEFAULT 'question'",
     "ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS views INTEGER DEFAULT 0",
     "ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS moderation_status VARCHAR DEFAULT 'ok'",
+    "ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS images TEXT DEFAULT ''",
+    "ALTER TABLE shopping_items ADD COLUMN IF NOT EXISTS expires_at VARCHAR DEFAULT ''",
     # ---- Learn: fagurele de lecții + rank-uri ----
     "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS rank VARCHAR DEFAULT 'copper'",
     "ALTER TABLE saved_recipes ADD COLUMN IF NOT EXISTS cooked_at TIMESTAMP",

@@ -102,6 +102,7 @@ class ForumPostCreate(BaseModel):
     body: str = ""
     language: str = "en"     # subforumul
     tag: str = "question"    # subiectul
+    images: List[str] = Field(default_factory=list)
 
 
 class ForumPostUpdate(BaseModel):
@@ -109,6 +110,7 @@ class ForumPostUpdate(BaseModel):
     body: Optional[str] = None
     language: Optional[str] = None
     tag: Optional[str] = None
+    images: Optional[List[str]] = None
 
 
 class ForumVoteIn(BaseModel):
@@ -166,6 +168,7 @@ class ShoppingItemIn(BaseModel):
     # număr ar pierde informația
     quantity: str = ""
     unit: str = ""
+    expires_at: str = ""   # „YYYY-MM-DD", de regulă scanat de pe ambalaj
 
 
 class ShoppingItemUpdate(BaseModel):
@@ -173,6 +176,7 @@ class ShoppingItemUpdate(BaseModel):
     quantity: Optional[str] = None
     unit: Optional[str] = None
     checked: Optional[bool] = None
+    expires_at: Optional[str] = None
 
 
 class MealPlanIn(BaseModel):

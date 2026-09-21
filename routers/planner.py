@@ -7,6 +7,8 @@ iar ștergerea datelor de site le pierdea. Acum sunt rânduri legate de cont.
 Logica de adăugare stă în `services/planner.py` pentru că asistentul din chat
 scrie prin exact aceleași funcții — vezi `routers/ai.py`.
 """
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
@@ -17,6 +19,22 @@ from deps import get_current_user
 from services import planner
 
 router = APIRouter(prefix="/planner", tags=["planner"])
+
+
+def _clean_expiry(value) -> str:
+    """„YYYY-MM-DD" sau gol. Orice altceva e refuzat.
+
+    Valoarea vine dintr-un OCR de pe ambalaj, deci poate fi orice; o stocăm ca
+    text, dar tot ce intră trebuie să fie o dată reală, altfel lista ar afișa
+    „expiră pe 2026-13-45"."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        raise HTTPException(400, "Data de expirare trebuie să fie YYYY-MM-DD")
+    return text
 
 
 # ==========================================================================
@@ -49,6 +67,11 @@ def add_shopping_item(
     )
     if item is None:
         raise HTTPException(400, "Scrie ce trebuie cumpărat")
+    # `add_shopping` poate întoarce un rând existent (a adunat cantitățile). O
+    # dată proaspăt scanată bate ce era acolo; una goală nu șterge nimic.
+    expiry = _clean_expiry(data.expires_at)
+    if expiry:
+        item.expires_at = expiry
     db.commit()
     db.refresh(item)
     return planner.shopping_to_dict(item)
@@ -89,6 +112,9 @@ def update_shopping_item(
         item.unit = str(payload["unit"]).strip().lower()
     if "checked" in payload:
         item.checked = bool(payload["checked"])
+    if "expires_at" in payload:
+        # Șirul gol e o valoare validă aici: așa se șterge o dată citită greșit.
+        item.expires_at = _clean_expiry(payload["expires_at"])
 
     db.commit()
     db.refresh(item)

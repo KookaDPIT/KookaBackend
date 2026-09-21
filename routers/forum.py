@@ -5,6 +5,7 @@ care scrii** (`language`). Subiectul unei postări nu mai e un subforum separat,
 ci un `tag` — așa același subiect e găsibil în toate limbile, iar cititorul
 alege întâi limba pe care o înțelege.
 """
+import json
 import math
 from datetime import datetime, timedelta
 
@@ -151,6 +152,31 @@ def _my_votes(db: Session, viewer, post_ids):
     return {pid: int(v) for pid, v in rows}
 
 
+def _images(post) -> list:
+    """Lista de poze a postării. Coloana e text JSON și poate lipsi cu totul pe
+    rândurile scrise înainte de migrare, deci nimic din ce vine de acolo nu e
+    de încredere fără verificare."""
+    raw = getattr(post, "images", "") or ""
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(u) for u in parsed if u]
+
+
+def _clean_images(urls) -> list:
+    """Cel mult 6 URL-uri, fără goluri. Limita ține tile-ul și payload-ul mici;
+    o postare care are nevoie de mai mult de șase poze are nevoie de un album."""
+    out = []
+    for u in (urls or [])[:6]:
+        u = str(u).strip()
+        if u:
+            out.append(u)
+    return out
+
+
 def _post_to_dict(post, comments=0, my_vote=0, with_body=False):
     data = {
         "id": post.id,
@@ -158,6 +184,7 @@ def _post_to_dict(post, comments=0, my_vote=0, with_body=False):
         "title": post.title,
         "language": post.language or "en",
         "tag": post.tag or "question",
+        "images": _images(post),
         "votes": post.votes or 0,
         "views": post.views or 0,
         "comment_count": comments,
@@ -386,6 +413,7 @@ def create_post(
         body=data.body.strip(),
         language=data.language,
         tag=data.tag,
+        images=json.dumps(_clean_images(data.images), ensure_ascii=False),
         votes=1,                      # autorul își votează implicit postarea
         views=0,
         author_id=user.id,
@@ -423,6 +451,11 @@ def update_post(
         payload["title"] = payload["title"].strip()
         if len(payload["title"]) < 5:
             raise HTTPException(400, "Titlul trebuie să aibă cel puțin 5 caractere")
+
+    # `images` ajunge în DB ca text JSON, nu ca listă Python — restul câmpurilor
+    # sunt coloane simple și merg prin setattr ca până acum.
+    if "images" in payload:
+        payload["images"] = json.dumps(_clean_images(payload["images"]), ensure_ascii=False)
 
     for field, value in payload.items():
         setattr(post, field, value)
