@@ -1,16 +1,19 @@
-"""Endpointuri AI care au nevoie de contextul aplicației.
+"""Endpointurile AI care au nevoie de contextul aplicației.
 
-Două lucruri diferite trăiesc aici:
+Două lucruri diferite:
 
-* **cook-along** (`/ai/cook/{recipe_id}`) — modelul primește o singură rețetă
-  și pasul exact la care a ajuns omul, ca să răspundă la „cât mai stă?" fără
-  ca el să repete contextul.
-* **chat liber** (`/ai/chat`) — conversație cu istoric salvat în DB. Modelul
-  primește catalogul de rețete la care userul chiar are acces, așa că poate
-  recomanda rețete reale din aplicație, nu inventate.
+  /ai/cook/{recipe_id}  modelul primește o rețetă și pasul exact la care a
+                        ajuns omul, ca să răspundă la „cât mai stă?"
+  /ai/chat              conversație cu istoric în DB. Modelul primește
+                        catalogul de rețete la care userul are acces, deci
+                        recomandă rețete reale, nu inventate
 
-Moderarea și nutriția de la crearea rețetei stau tot în `services/ai.py`, dar
-nu au nevoie de rută proprie — rulează în fluxul rețetelor.
+Partea grea din fișier e alegerea catalogului: deduplicarea variantelor
+aceluiași preparat și sortarea după întrebare. Vezi _dedupe_by_dish() și
+_rank_catalogue().
+
+Moderarea și nutriția de la crearea rețetei sunt tot în services/ai.py, dar
+rulează în fluxul rețetelor și n-au rută proprie.
 """
 import base64
 import json
@@ -30,23 +33,22 @@ from services import ai, planner, ranks, visibility
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
-# O poză trimisă în chat: ajunge la model ca data-URI efemer și NU se stochează.
+# O poză trimisă în chat ajunge la model ca data-URI efemer. Nu se stochează.
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
-# Câte rețete îi arătăm modelului ca să aibă din ce alege. Ține-l mic: fiecare
-# linie se plătește în tokeni la FIECARE mesaj, iar modelul oricum recomandă cel
-# mult trei. Cele trimise sunt cele mai apropiate de întrebare (vezi
-# `_rank_catalogue`), completate cu cele mai noi.
+# Câte rețete îi arătăm modelului. Ține numărul mic: fiecare linie se plătește
+# în tokeni la fiecare mesaj, iar modelul recomandă oricum cel mult trei.
+# Trimitem cele mai apropiate de întrebare, vezi _rank_catalogue(), completate
+# cu cele mai noi.
 CATALOGUE_LIMIT = 15
-# Din câte rețete alegem cele CATALOGUE_LIMIT. Filtrarea se face în Python, nu
-# în SQL, ca să meargă la fel pe Postgres și pe SQLite.
+# Din câte rețete alegem cele CATALOGUE_LIMIT. Filtrarea e în Python, nu în
+# SQL, ca să meargă la fel pe Postgres și pe SQLite.
 CATALOGUE_POOL = 300
-# Cât de mult trebuie să semene două titluri ca să le tratăm drept același
-# preparat. 0.5 prinde „Carbonara" / „Spaghetti carbonara" fără să lipească
-# „Tomato soup" de „Tomato pasta".
+# Cât de mult trebuie să semene două titluri ca să fie același preparat. 0.5
+# prinde „Carbonara" și „Spaghetti carbonara" fără să lipească „Tomato soup"
+# de „Tomato pasta".
 TITLE_SIMILARITY = 0.5
 
-# Cuvinte care apar în orice întrebare și n-ar face decât să potrivească la
-# întâmplare („what can I make with...").
+# Cuvinte care apar în orice întrebare și ar potrivi la întâmplare.
 _STOPWORDS = {
     "a", "an", "and", "any", "are", "as", "at", "be", "but", "can", "cook",
     "cooking", "could", "do", "does", "eat", "find", "food", "for", "from", "get",
@@ -85,7 +87,7 @@ def ask_while_cooking(
     if recipe.author_id in visibility.hidden_author_ids(db, user):
         raise HTTPException(404, "Rețeta nu există")
 
-    # Aceeași poartă de rank ca la deschiderea rețetei — altfel asistentul ar
+    # Aceeași poartă de rank ca la deschiderea rețetei. Altfel asistentul ar
     # dicta pașii unei rețete pe care contul nu are voie s-o vadă.
     recipe_rank = ranks.normalize_recipe_rank(recipe.rank, recipe.difficulty)
     if not (staff or mine) and not ranks.can_access_recipe(user.xp_total or 0, recipe_rank):
@@ -115,9 +117,9 @@ def ask_while_cooking(
 def _batch_stats(db: Session, ids: list):
     """(avg_rating, review_count, saves) pentru multe rețete deodată.
 
-    `serializers.recipe_stats` face trei interogări per rețetă — pe 300 de
-    rețete ar însemna sute de query-uri la fiecare mesaj din chat. Aici sunt
-    două, indiferent câte rețete avem.
+    serializers.recipe_stats() face trei interogări per rețetă. Pe 300 de
+    rețete ar însemna sute de interogări la fiecare mesaj. Aici sunt două,
+    indiferent câte rețete avem.
     """
     if not ids:
         return {}
@@ -150,12 +152,14 @@ def _batch_stats(db: Session, ids: list):
 
 
 def _title_tokens(title: str):
-    """Titlul redus la esență, pentru comparat: fără diacritice, fără
-    punctuație, fără glosarul din paranteză și fără cuvinte de umplutură.
-    „Ouă ochiuri cu roșii (sunny-side-up eggs)" și „Oua ochiuri cu rosii" ajung
-    la același set."""
+    """Titlul redus la esență, pentru comparat.
+
+    Fără diacritice, fără punctuație, fără glosarul din paranteză și fără
+    cuvinte de umplutură. „Ouă ochiuri cu roșii (sunny-side-up eggs)" și „Oua
+    ochiuri cu rosii" ajung la același set.
+    """
     text = title or ""
-    # glosa dintre paranteze e traducere, nu preparat diferit
+    # glosa dintre paranteze e traducere, nu alt preparat
     while "(" in text and ")" in text:
         start, end = text.index("("), text.index(")")
         if start > end:
@@ -170,12 +174,13 @@ def _title_tokens(title: str):
 def _similar(a: set, b: set) -> bool:
     """Două titluri despre același preparat.
 
-    Doar Jaccard nu e destul: „Carbonara" și „Spaghetti carbonara" ies la 0.5
-    și ar rămâne separate, deși sunt evident aceeași rețetă. Așa că cerem două
-    lucruri deodată — titlul scurt să fie aproape complet cuprins în celălalt
-    (containment), dar cele două să nu difere prea mult ca lungime (Jaccard).
-    A doua condiție e cea care ține „Carbonara" departe de „Carbonara with peas
-    and bacon", care chiar e alt preparat.
+    Jaccard singur nu ajunge: „Carbonara" și „Spaghetti carbonara" ies la 0.5
+    și ar rămâne separate, deși sunt aceeași rețetă. Cerem două lucruri
+    deodată: titlul scurt să fie aproape complet cuprins în celălalt, și cele
+    două să nu difere mult ca lungime.
+
+    A doua condiție ține „Carbonara" departe de „Carbonara with peas and
+    bacon", care chiar e alt preparat.
     """
     if not a or not b:
         return False
@@ -188,12 +193,11 @@ def _similar(a: set, b: set) -> bool:
 
 
 def _quality_score(r: dict) -> float:
-    """Cât de bună e o rețetă, când trebuie să alegem una dintre mai multe
-    variante ale aceluiași preparat.
+    """Cât de bună e o rețetă, când alegem între variante ale aceluiași preparat.
 
-    Nota se trage spre medie când sunt puține recenzii (un singur 5 nu trebuie
-    să bată un 4.6 din patruzeci), apoi contează cât de completă e rețeta —
-    una cu poză și cu nutriție calculată e mai utilă cuiva care o deschide.
+    Nota se trage spre medie când sunt puține recenzii, ca un singur 5 să nu
+    bată un 4.6 din patruzeci. Apoi contează cât de completă e: una cu poză și
+    cu nutriție calculată e mai utilă cuiva care o deschide.
     """
     prior, weight = 3.5, 5.0        # media presupusă și cât de repede o părăsim
     reviews = r.get("reviews", 0)
@@ -212,10 +216,10 @@ def _quality_score(r: dict) -> float:
 
 
 def _dedupe_by_dish(rows: list):
-    """Un singur card per preparat: cea mai bună variantă a fiecăruia.
+    """Un singur card per preparat, cea mai bună variantă a fiecăruia.
 
     Fără asta, un chat care recomandă „ouă ochiuri" arată trei carduri aproape
-    identice, pentru că trei utilizatori au publicat aceeași rețetă.
+    identice, fiindcă trei oameni au publicat aceeași rețetă.
     """
     groups = []                      # [(tokens, [rows...])]
     for r in rows:
@@ -230,7 +234,7 @@ def _dedupe_by_dish(rows: list):
     out = []
     for _, members in groups:
         best = max(members, key=_quality_score)
-        # spunem modelului câte variante am strâns, ca să nu pretindă că e unica
+        # Spunem modelului câte variante am strâns, ca să nu pretindă că e unica.
         best = dict(best, duplicates=len(members) - 1)
         out.append(best)
     return out
@@ -243,19 +247,22 @@ def _keywords(text: str):
 
 
 def _same_stem(a: str, b: str, n: int = 4) -> bool:
-    """Potrivire slabă pe rădăcină: „italian"/„Italy", „tomatoes"/„tomato".
-    Fără librărie de stemming — n-avem nevoie de mai mult decât atât aici."""
+    """Potrivire slabă pe rădăcină: „italian" cu „Italy", „tomatoes" cu „tomato".
+
+    Fără librărie de stemming. Aici nu ne trebuie mai mult.
+    """
     return len(a) >= n and len(b) >= n and a[:n] == b[:n]
 
 
 def _rank_catalogue(rows: list, message: str, limit: int = CATALOGUE_LIMIT):
     """Cele mai potrivite `limit` rețete pentru întrebare.
 
-    Punctajul e simplu — câte cuvinte din întrebare apar în titlu sau în țara de
-    origine. Nu e căutare semantică și nici nu trebuie să fie: rolul ei e doar
-    să ridice deasupra rețetele plauzibile. Lista se completează întotdeauna
-    până la `limit` cu cele mai noi, ca modelul să aibă ce recomanda și când
-    întrebarea nu seamănă cu nimic („ceva de cină?").
+    Punctajul e simplu: câte cuvinte din întrebare apar în titlu, în țara de
+    origine sau în ingrediente. Nu e căutare semantică și nici nu trebuie să
+    fie, rolul ei e să ridice deasupra rețetele plauzibile.
+
+    Lista se completează mereu până la `limit` cu cele mai noi, ca modelul să
+    aibă ce recomanda și când întrebarea nu seamănă cu nimic.
     """
     words = _keywords(message)
     if words:
@@ -263,10 +270,10 @@ def _rank_catalogue(rows: list, message: str, limit: int = CATALOGUE_LIMIT):
         for r in rows:
             tokens = _keywords(f"{r['title']} {r.get('origin', '')}")
             haystack = f"{r['title']} {r.get('origin', '')}".lower()
-            # Ingredientele contează mai puțin decât titlul, dar contează: la o
-            # poză de frigider cuvintele sunt „egg", „spinach", „avocado", care
-            # nu apar în niciun titlu. Fără asta, catalogul trimis modelului
-            # erau pur și simplu cele mai noi 15 rețete, iar el le ignora.
+            # Ingredientele contează mai puțin decât titlul, dar contează. La
+            # o poză de frigider cuvintele sunt „egg", „spinach", „avocado",
+            # care nu apar în niciun titlu. Fără asta, catalogul trimis
+            # modelului erau cele mai noi 15 rețete, iar el le ignora.
             pantry = (r.get("pantry_text") or "").lower()
             score = 0
             for w in words:
@@ -303,9 +310,11 @@ def _load_ingredients(raw) -> list:
 
 
 def _accessible_recipes(db: Session, user: models.User, message: str = ""):
-    """Rețetele pe care userul chiar le poate deschide, restrânse la cele
-    relevante pentru întrebare. Aceleași filtre ca la listare, plus poarta de
-    rank — n-are rost să-i recomandăm ceva ce se lovește de un 403 la click."""
+    """Rețetele pe care userul le poate deschide, restrânse la cele relevante.
+
+    Aceleași filtre ca la listare, plus poarta de rank. N-are rost să-i
+    recomandăm ceva ce se lovește de un refuz la click.
+    """
     q = db.query(models.Recipe).filter(models.Recipe.moderation_status == "ok")
     q = visibility.visible_authors(
         q, models.Recipe, visibility.hidden_author_ids(db, user)
@@ -341,18 +350,18 @@ def _accessible_recipes(db: Session, user: models.User, message: str = ""):
                 "saves": st.get("saves", 0),
                 "has_image": bool(r.image_url),
                 "has_description": bool(r.description),
-                # Doar pentru sortare. Nu intră în promptul modelului —
-                # ingredientele a 15 rețete ar fi mai mult text decât tot
-                # restul conversației la un loc.
+                # Doar pentru sortare. Nu intră în promptul modelului:
+                # ingredientele a 15 rețete ar fi mai mult text decât toată
+                # conversația la un loc.
                 "pantry_text": " ".join(
                     str(i) for i in (_load_ingredients(r.ingredients))
                 ),
             }
         )
 
-    # Întâi scăpăm de variantele duplicate ale aceluiași preparat, apoi alegem
-    # cele mai potrivite pentru întrebare — altfel cele 15 locuri s-ar umple cu
-    # aceeași rețetă publicată de trei oameni.
+    # Întâi scoatem variantele duplicate ale aceluiași preparat, apoi alegem
+    # cele mai potrivite. Altfel cele 15 locuri s-ar umple cu aceeași rețetă
+    # publicată de trei oameni.
     return _rank_catalogue(_dedupe_by_dish(allowed), message)
 
 
@@ -371,9 +380,11 @@ def _conversation_or_404(db: Session, user: models.User, conversation_id: int):
 
 
 def _cards_for(db: Session, raw: str, user: models.User):
-    """Rehidratează atașamentele unui mesaj. Rețetele se citesc din DB la
-    fiecare afișare, ca una ștearsă între timp să dispară din fir în loc să
-    rămână un card mort."""
+    """Rehidratează atașamentele unui mesaj.
+
+    Rețetele se citesc din DB la fiecare afișare, ca una ștearsă între timp să
+    dispară din fir în loc să rămână un card mort.
+    """
     stored = {}
     if raw:
         try:
@@ -393,17 +404,18 @@ def _cards_for(db: Session, raw: str, user: models.User):
     return {
         "recipes": recipes,
         "nutrition": stored.get("nutrition"),
-        # A record of what was done, not a live view: the card says what this
-        # turn added, even if the person has since ticked it off the list.
+        # O înregistrare a ce s-a făcut, nu o vedere live. Cardul arată ce a
+        # adăugat tura asta, chiar dacă omul a bifat între timp linia.
         "plan": stored.get("plan"),
     }
 
 
 def _plan_card(db: Session, applied: dict):
-    """Ce a scris asistentul de fapt — nu ce a cerut.
+    """Ce a scris asistentul de fapt, nu ce a cerut.
 
-    Modelul poate cere douăzeci de linii; card-ul arată doar rândurile care au
-    intrat în DB, ca omul să vadă exact ce s-a schimbat."""
+    Modelul poate cere douăzeci de linii. Cardul arată doar rândurile care au
+    intrat în DB, ca omul să vadă exact ce s-a schimbat.
+    """
     if not applied or (not applied.get("shopping") and not applied.get("meals")):
         return None
     return {
@@ -455,9 +467,12 @@ def _convo_to_dict(c: models.ChatConversation):
 
 
 def _decode_image(data_uri: str) -> str:
-    """Validează data-URI-ul primit de la frontend. Întoarce chiar data-URI-ul
-    (asta primește Groq), dar numai după ce ne-am asigurat că e o imagine de
-    dimensiune rezonabilă — altfel un payload uriaș ar bloca requestul."""
+    """Validează data-URI-ul primit de la frontend.
+
+    Întoarce chiar data-URI-ul, fiindcă asta primește Groq, dar numai după ce
+    ne-am asigurat că e o imagine de dimensiune rezonabilă. Altfel un payload
+    uriaș ar bloca requestul.
+    """
     if not data_uri:
         return ""
     if not data_uri.startswith("data:image/"):
@@ -520,8 +535,11 @@ def send_message(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    """Un tur de conversație. Fără `conversation_id` se deschide un fir nou și
-    modelul îi dă și un titlu, ca lista din bara laterală să fie utilă."""
+    """Un tur de conversație.
+
+    Fără `conversation_id` se deschide un fir nou, iar modelul îi dă și un
+    titlu, ca lista din bara laterală să fie utilă.
+    """
     message = (data.message or "").strip()
     image = _decode_image(data.image or "")
     if not message and not image:
@@ -536,7 +554,7 @@ def send_message(
         db.flush()
         is_new = True
 
-    # Istoricul e ce s-a spus PÂNĂ acum; mesajul curent pleacă separat.
+    # Istoricul e ce s-a spus până acum. Mesajul curent pleacă separat.
     history = [{"role": m.role, "text": m.text} for m in convo.messages]
 
     db.add(
@@ -550,14 +568,13 @@ def send_message(
 
     progress = ranks.progress_for_xp(user.xp_total or 0)
 
-    # O poză de frigider e o întrebare fără cuvinte, iar catalogul se alege după
-    # cuvinte. Așa că întâi întrebăm modelul ce vede, și abia apoi alegem ce
-    # rețete merită să-i arătăm. Fără pasul ăsta, la o poză primea cele mai noi
-    # 15 rețete — nimic de-a face cu ce e în poză — și răspundea din memorie,
-    # fără să recomande nimic din aplicație.
+    # O poză de frigider e o întrebare fără cuvinte, iar catalogul se alege
+    # după cuvinte. Deci întâi întrebăm modelul ce vede, apoi alegem ce rețete
+    # merită arătate. Fără pasul ăsta, la o poză primea cele mai noi 15 rețete
+    # și răspundea din memorie, fără să recomande nimic din aplicație.
     seen = ai.see_ingredients(image) if image else []
-    # Cuvintele din poză se adaugă la ce a scris omul: dacă a scris ceva, ce a
-    # scris rămâne valabil („ceva rapid"), doar că acum știm și ce are în casă.
+    # Cuvintele din poză se adaugă la ce a scris omul. Dacă a scris ceva, ce a
+    # scris rămâne valabil, doar că acum știm și ce are în casă.
     catalogue_query = " ".join(x for x in [message, " ".join(seen)] if x).strip()
 
     answer = ai.chat_reply(
@@ -572,15 +589,15 @@ def send_message(
         seen_ingredients=seen,
         want_title=is_new,
         ui_language=user.language or "en",
-        # what is already on their list and in their calendar, so "add what I
-        # need" does not duplicate half of it
+        # ce are deja pe listă și în calendar, ca „adaugă ce-mi trebuie" să nu
+        # dubleze jumătate din ele
         planner_lines=planner.summarize_for_model(db, user),
     )
 
-    # The assistant can write to the shopping list and the meal plan. Every
-    # field is re-validated inside services/planner.py, which is the same code
-    # the buttons on the planner page go through — so a hallucinated recipe id
-    # or an impossible date turns into a plain title or today, never a bad row.
+    # Asistentul poate scrie pe lista de cumpărături și în calendar. Fiecare
+    # câmp se revalidează în services/planner.py, același cod prin care trec
+    # butoanele din pagină. Un id halucinat sau o dată imposibilă devin un
+    # titlu simplu sau ziua de azi, niciodată un rând stricat.
     applied = planner.apply_ai_plan(db, user, answer.get("plan"))
     plan_card = _plan_card(db, applied)
 
@@ -598,8 +615,8 @@ def send_message(
     db.add(ai_msg)
 
     if is_new:
-        # Dacă modelul n-a dat titlu, cădem pe primele cuvinte ale întrebării —
-        # tot e mai bun decât „New conversation" pe toate firele.
+        # Fără titlu de la model, cădem pe primele cuvinte ale întrebării. Tot
+        # e mai bun decât „New conversation" pe toate firele.
         fallback = (message or "Photo").strip()
         convo.title = answer["title"] or (fallback[:47] + "…" if len(fallback) > 48 else fallback)
 

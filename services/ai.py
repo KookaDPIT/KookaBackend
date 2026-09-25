@@ -1,8 +1,22 @@
-"""Integrare Groq: estimare nutriție, moderare rețete și verificare vizuală
-că poza de gătit e mâncare plauzibilă.
+"""Tot ce trece prin Groq.
 
-Toate funcțiile sunt tolerante la erori: dacă Groq nu răspunde sau cheia
-lipsește, întorc un fallback grațios ca să nu blocheze crearea rețetei."""
+Cinci lucruri, în ordinea din fișier:
+
+  analyze_recipe()    nutriție, alergeni, tipul felului, plus moderarea
+  verify_cook()       poza de gătit arată a mâncare?
+  translate_recipe()  la publicare, spre engleză, tăcut
+  translate_into()    la cerere, spre limba cititorului
+  see_ingredients()   ce se vede într-o poză de frigider
+  cook_answer()       întrebări în timpul gătitului, cu un pas drept context
+  chat_reply()        chatul liber, cu catalogul de rețete drept context
+
+Toate sunt tolerante la erori. Fără cheie, sau cu Groq căzut, întorc un
+fallback în loc să arunce. Cine suprascrie date existente trebuie să verifice
+`ok` înainte, altfel un fallback gol șterge valori bune.
+
+Modelele se aleg din .env. Un id retras nu dă eroare la pornire, ci 404 la
+primul apel, deci verifică acolo când AI-ul tace.
+"""
 import os
 import json
 
@@ -15,14 +29,14 @@ load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TEXT_MODEL = os.getenv("GROQ_TEXT_MODEL", "llama-3.3-70b-versatile")
 VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
-# Munca de fundal (traducere, nutriție, moderare) — treabă tăcută, la care nimeni
-# nu se uită cum scrie. Groq numără tokenii SEPARAT pentru fiecare model, așa că
-# mutând-o pe alt model îi dai conversației cu utilizatorul o cotă întreagă doar
-# a ei. Implicit rămâne pe TEXT_MODEL: setează GROQ_UTILITY_MODEL ca să separi.
+# Munca de fundal, adică traducere, nutriție și moderare. Groq numără tokenii
+# separat per model, deci mutând-o pe alt model, conversația cu utilizatorul
+# primește o cotă întreagă doar a ei. Implicit rămâne pe TEXT_MODEL. Setează
+# GROQ_UTILITY_MODEL ca să le separi.
 UTILITY_MODEL = os.getenv("GROQ_UTILITY_MODEL", "") or TEXT_MODEL
 
-# Nutriție implicită (per porție) când AI-ul nu răspunde — structura pe care o
-# așteaptă frontendul pentru gauge-uri.
+# Nutriția implicită, per porție, când modelul nu răspunde. E structura pe care
+# o așteaptă gauge-urile din frontend.
 _EMPTY_NUTRITION = [
     {"key": "kcal", "label": "Calories", "value": 0, "unit": "kcal", "max": 2000},
     {"key": "prot", "label": "Protein", "value": 0, "unit": "g", "max": 50},
@@ -43,23 +57,22 @@ def _client():
 
 
 def analyze_recipe(title: str, ingredients: list, steps: list, servings: int = 1):
-    """Estimează nutriția + alergenii și validează că rețeta e reală.
+    """Nutriția, alergenii, tipul felului, și dacă rețeta e reală.
 
-    Întoarce dict:
-      {
-        "valid": bool,          # False = spam / prostii
-        "reason": str,          # explicație scurtă dacă invalid
-        "calories": int,        # kcal per porție
-        "nutrition": [...],     # structura de gauge-uri
-        "allergens": {"contains": [...], "free": [...]},
-        "course": str,          # tipul felului (services/courses.COURSE_IDS)
-      }
+    Întoarce:
+      ok         False când numerele vin din fallback, nu de la model
+      valid      False doar pentru spam sau conținut neconsumabil
+      reason     explicație scurtă, când valid e False
+      calories   kcal per porție
+      nutrition  structura de gauge-uri
+      allergens  {"contains": [...], "free": [...]}
+      course     un id din services/courses.COURSE_IDS
     """
-    # `ok` says whether these numbers came from the model or are the empty
-    # shape we fall back to when Groq is unreachable. Publishing tolerates the
-    # empty shape — better a recipe with no nutrition than no recipe — but
-    # anything that OVERWRITES existing data must check it first, or a moderator
-    # pressing "re-analyse" while the key is missing would wipe good values.
+    # `ok` spune dacă numerele vin de la model sau din forma goală de mai jos.
+    # Publicarea acceptă forma goală: mai bine o rețetă fără nutriție decât
+    # nicio rețetă. Dar orice cale care suprascrie date existente trebuie să
+    # verifice `ok` întâi, altfel un moderator care apasă „reanalizează" cu
+    # cheia lipsă șterge valori bune.
     fallback = {
         "ok": False,
         "valid": True,
@@ -75,10 +88,10 @@ def analyze_recipe(title: str, ingredients: list, steps: list, servings: int = 1
         return fallback
 
     step_texts = [s.get("text", "") if isinstance(s, dict) else str(s) for s in steps]
-    # Interpolat direct în f-string, nu printr-un `.replace` de după: un
+    # Interpolat direct în f-string, nu printr-un `.replace` de după. Un
     # `{PLACEHOLDER}` scris într-un f-string e evaluat ca expresie la
-    # construirea șirului, deci pică pe NameError înainte ca `.replace` să apuce
-    # să ruleze. Asta a scos din funcțiune și publicarea, și editarea rețetelor.
+    # construirea șirului, deci pică pe NameError înainte să apuce `.replace`
+    # să ruleze. Asta scosese din funcțiune și publicarea, și editarea.
     course_list = ", ".join(courses.COURSE_IDS)
     prompt = f"""You are a culinary and nutrition expert. Analyze this user-submitted recipe.
 
@@ -134,7 +147,7 @@ Only output the JSON."""
             "calories": int(data.get("calories", 0) or 0),
             "nutrition": data.get("nutrition") or _EMPTY_NUTRITION,
             "allergens": data.get("allergens") or {"contains": [], "free": []},
-            # Un id inventat de model e la fel de inutil ca unul lipsă: cădem
+            # Un id inventat de model e la fel de inutil ca unul lipsă. Cădem
             # pe euristica din titlu, care măcar respectă vocabularul.
             "course": courses.normalize(data.get("course", ""))
             or courses.guess(title, ingredients),
@@ -144,10 +157,11 @@ Only output the JSON."""
 
 
 def verify_cook(title: str, image_url: str):
-    """Verifică (permisiv) că poza e mâncare gătită plauzibilă.
+    """Poza de gătit arată a mâncare gătită? Verificare permisivă.
 
-    Întoarce {"verified": bool, "reason": str}. Dacă Groq nu e disponibil,
-    acceptă (verified=True) ca să nu blocheze utilizatorul."""
+    Întoarce {"verified": bool, "reason": str}. Fără Groq acceptă, ca să nu
+    blocheze utilizatorul pe o indisponibilitate a noastră.
+    """
     client = _client()
     if client is None or not image_url:
         return {"verified": True, "reason": "verificare indisponibilă, acceptat implicit"}
@@ -178,16 +192,21 @@ def verify_cook(title: str, image_url: str):
         verified = bool(data.get("is_food")) and bool(data.get("plausible"))
         return {"verified": verified, "reason": str(data.get("reason", ""))}
     except Exception:
-        # eroare de model -> acceptăm ca să nu blocăm fluxul
+        # Eroare de model. Acceptăm, ca să nu blocăm fluxul.
         return {"verified": True, "reason": "verificare eșuată tehnic, acceptat implicit"}
 
 
 # ==========================================================================
-# TRADUCERE REȚETE
-# Site-ul e în engleză, dar oricine poate scrie o rețetă în limba lui. La
-# creare/editare detectăm limba și, dacă nu e engleză, salvăm varianta
-# tradusă — conținutul din DB rămâne mereu în engleză, iar `source_language`
-# spune de unde a venit, ca să putem afișa „Translated from Romanian".
+# TRADUCERE
+#
+# Două funcții, în sensuri opuse:
+#
+#   translate_recipe()  la publicare, spre engleză, fără ca cineva s-o ceară.
+#                       Pe engleză se face căutarea și o citește AI-ul.
+#   translate_into()    la apăsarea butonului, spre limba cititorului.
+#
+# Ce scoate a doua nu înlocuiește textul rețetei. Se salvează separat, în
+# recipe_translations, ca să nu plătim aceeași traducere de două ori.
 # ==========================================================================
 
 _LANG_NAMES = {
@@ -203,14 +222,14 @@ _LANG_NAMES = {
 
 
 def language_name(code: str) -> str:
-    """Numele afișabil al unei limbi ('ro' -> 'Romanian')."""
+    """Numele afișabil al unei limbi, „ro" -> „Romanian"."""
     return _LANG_NAMES.get((code or "").lower(), (code or "").upper())
 
 
 def _ui_language_line(code: str) -> str:
     """Linia de sistem care spune modelului pe ce limbă să cadă înapoi.
 
-    Limba răspunsului o decide mesajul omului — el poate scrie în franceză cu
+    Limba răspunsului o decide mesajul omului, care poate scrie în franceză cu
     interfața pe engleză. Asta e doar plasa pentru „ok", „și acum?", „merci",
     mesaje prea scurte ca să aibă o limbă.
     """
@@ -223,17 +242,16 @@ def _ui_language_line(code: str) -> str:
 
 
 def translate_recipe(title: str, description: str, ingredients: list, steps: list):
-    """Detectează limba rețetei și o traduce în engleză dacă e nevoie.
+    """Detectează limba rețetei și o traduce în engleză, dacă e nevoie.
 
-    Întoarce dict:
-      {
-        "language": "ro",        # limba sursă detectată (ISO 639-1)
-        "translated": bool,      # False = era deja engleză / AI indisponibil
-        "title", "description", "ingredients", "steps"   # varianta finală (EN)
-      }
+    Întoarce:
+      language    limba sursă detectată, ISO 639-1
+      translated  False când era deja engleză, sau când modelul n-a răspuns
+      title, description, ingredients, steps
 
-    Pe orice eroare întoarce conținutul original, netradus — o rețetă scrisă
-    în altă limbă e mai bună decât o rețetă care nu se poate publica.
+    Pe orice eroare întoarce conținutul original, netradus. O rețetă într-o
+    altă limbă e mai bună decât o rețetă care nu se poate publica. Vezi
+    serializers.content_language() pentru ce înseamnă asta mai departe.
     """
     original = {
         "language": "en",
@@ -248,7 +266,7 @@ def translate_recipe(title: str, description: str, ingredients: list, steps: lis
     if client is None:
         return original
 
-    # Trimitem doar textul care chiar se traduce; `timer` rămâne neatins.
+    # Trimitem doar textul care chiar se traduce. `timer` rămâne neatins.
     payload = {
         "title": title,
         "description": description or "",
@@ -302,8 +320,8 @@ Only output the JSON."""
 
         new_ing = data.get("ingredients") or []
         new_steps = data.get("steps") or []
-        # Lungimile trebuie să se potrivească — dacă modelul a sărit sau a
-        # inventat linii nu avem cum să le mapăm pe original, deci păstrăm originalul.
+        # Lungimile trebuie să se potrivească. Dacă modelul a sărit sau a
+        # inventat linii, nu le putem mapa pe original, deci păstrăm originalul.
         if len(new_ing) != len(payload["ingredients"]) or len(new_steps) != len(payload["steps"]):
             return {**original, "language": lang}
 
@@ -334,17 +352,18 @@ def translate_into(
     steps: list,
     target: str,
 ):
-    """Traduce o rețetă ÎN limba cerută, la cerere.
+    """Traduce o rețetă în limba cerută, la cerere.
 
-    Sora lui `translate_recipe`, dar în sens invers și pe alt declanșator: aia
-    rulează tăcut la publicare și scoate mereu engleză (ce se caută și ce
-    citește AI-ul), asta rulează doar când cineva apasă „tradu" și scoate limba
-    lui. Nimic din ce iese de aici nu înlocuiește textul rețetei în DB — se
-    salvează separat, ca o traducere, ca să n-o mai plătim a doua oară.
+    Perechea lui translate_recipe(), în sens invers și pe alt declanșator.
+    Aia rulează tăcut la publicare și scoate engleză. Asta rulează doar când
+    cineva apasă „tradu" și scoate limba lui.
 
-    Întoarce {"ok", "language", "title", "description", "ingredients", "steps"};
-    `ok=False` înseamnă că nu s-a tradus nimic (AI indisponibil sau răspuns
-    inutilizabil) și apelantul trebuie să arate textul original.
+    Nimic din ce iese de aici nu înlocuiește textul rețetei în DB. Apelantul
+    salvează separat, ca traducere.
+
+    Întoarce {"ok", "language", "title", "description", "ingredients", "steps"}.
+    `ok=False` înseamnă că nu s-a tradus nimic, iar apelantul trebuie să arate
+    textul original.
     """
     code = (target or "").lower()[:2]
     failed = {
@@ -408,9 +427,9 @@ Only output the JSON."""
         data = json.loads(resp.choices[0].message.content)
         new_ing = data.get("ingredients") or []
         new_steps = data.get("steps") or []
-        # Aceeași verificare ca la traducerea spre engleză: dacă modelul a sărit
-        # sau a inventat linii nu le putem mapa peste original, iar o listă de
-        # ingrediente decalată față de pași e mai rea decât textul netradus.
+        # Aceeași verificare ca la traducerea spre engleză. Dacă modelul a
+        # sărit sau a inventat linii, nu le putem mapa peste original, iar o
+        # listă de ingrediente decalată față de pași e mai rea decât netradusă.
         if len(new_ing) != len(payload["ingredients"]) or len(new_steps) != len(payload["steps"]):
             return failed
 
@@ -435,7 +454,7 @@ Only output the JSON."""
 
 
 # ==========================================================================
-# COOK-ALONG: întrebări puse în timpul gătitului, cu contextul rețetei
+# COOK-ALONG: întrebări în timpul gătitului, cu pasul curent drept context
 # ==========================================================================
 
 COOK_FALLBACK = (
@@ -445,8 +464,10 @@ COOK_FALLBACK = (
 
 
 def _recipe_context(recipe: dict, step_index: int) -> str:
-    """Blocul de context trimis modelului: rețeta întreagă + unde a ajuns
-    utilizatorul. Fără el, AI-ul răspunde generic la „cât mai stă?"."""
+    """Contextul trimis modelului: rețeta întreagă și unde a ajuns omul.
+
+    Fără el, răspunsul la „cât mai stă?" e generic.
+    """
     steps = recipe.get("steps") or []
     ingredients = recipe.get("ingredients") or []
 
@@ -519,10 +540,11 @@ def cook_answer(
 ):
     """Răspunde la o întrebare pusă în timpul gătitului.
 
-    `recipe` e dictul serializat al rețetei (full=True), `step_index` e pasul
-    curent (0-based), `history` e lista {role, text} din panoul lateral.
-    `ui_language` e limba interfeței — folosită doar ca plasă când întrebarea
-    e prea scurtă ca să-i ghicești limba.
+    `recipe` e dictul serializat cu full=True, `step_index` e pasul curent,
+    0-based, `history` e lista {role, text} din panoul lateral.
+
+    `ui_language` e limba interfeței și se folosește doar ca plasă, când
+    întrebarea e prea scurtă ca să-i ghicești limba.
     """
     client = _client()
     if client is None:
@@ -555,11 +577,12 @@ def cook_answer(
 
 
 # ==========================================================================
-# CHAT LIBER CU KOOKA
-# Spre deosebire de cook-along (unde contextul e o singură rețetă), aici
-# modelul primește catalogul de rețete la care userul chiar are acces și
-# poate să recomande din el. Ce iese e text de conversație plus, opțional,
-# atașamente structurate: rețete reale (carduri) și o estimare nutrițională.
+# CHAT LIBER
+#
+# Spre deosebire de cook-along, unde contextul e o singură rețetă, aici
+# modelul primește catalogul de rețete la care userul are acces și poate
+# recomanda din el. Iese text de conversație plus, opțional, atașamente:
+# rețete reale sub formă de carduri și o estimare nutrițională.
 # ==========================================================================
 
 CHAT_FALLBACK = (
@@ -644,14 +667,15 @@ Language:
 def see_ingredients(image_data_uri: str) -> list:
     """Ce alimente se văd în poză, ca listă de cuvinte în engleză.
 
-    O trecere separată, înaintea răspunsului propriu-zis, fiindcă altfel
-    catalogul de rețete se alege în orb: cel care alege ce rețete îi arătăm
-    modelului se uită la TEXTUL mesajului, iar la o poză de frigider textul e
-    gol. Rezultatul nu ajunge la om — e doar cheia după care sortăm catalogul,
-    și de-aia e în engleză, ca titlurile rețetelor din DB.
+    O trecere separată, înaintea răspunsului. Altfel catalogul de rețete se
+    alege în orb: selecția se uită la textul mesajului, iar la o poză de
+    frigider textul e gol.
 
-    Pe orice eroare întoarce o listă goală: fără ea chatul răspunde exact ca
-    înainte, doar fără recomandări din aplicație.
+    Rezultatul nu ajunge la om. E doar cheia după care sortăm catalogul, de
+    aceea e în engleză, ca titlurile din DB.
+
+    Pe orice eroare întoarce listă goală. Fără ea, chatul răspunde ca înainte,
+    doar fără recomandări din aplicație.
     """
     client = _client()
     if client is None or not image_data_uri:
@@ -727,12 +751,12 @@ def chat_reply(
 ):
     """Un tur de conversație cu Kooka.
 
-    `catalogue` e o listă de dict-uri {id, title, origin, duration_min, calories,
-    rank, avg, reviews} — doar rețete la care userul are acces, deja
-    deduplicate. `image_data_uri` mută apelul pe modelul de vision (poza nu se
-    stochează nicăieri).
+    `catalogue` e o listă de dicturi {id, title, origin, duration_min,
+    calories, rank, avg, reviews}, doar rețete la care userul are acces, deja
+    deduplicate. `image_data_uri` mută apelul pe modelul de vision, iar poza
+    nu se stochează nicăieri.
 
-    Întoarce {"text", "recipe_ids", "nutrition", "title", "ok"}.
+    Întoarce {"text", "recipe_ids", "nutrition", "plan", "title", "ok"}.
     """
     empty = {
         "text": CHAT_FALLBACK,
@@ -829,7 +853,7 @@ def chat_reply(
     except Exception:
         return empty
 
-    # ids valide = doar cele chiar existente în catalog; modelul mai inventează
+    # Id-uri valide înseamnă doar cele din catalog. Modelul mai inventează.
     allowed = {int(r["id"]) for r in (catalogue or [])}
     ids = []
     for rid in (data.get("recipe_ids") or [])[:3]:
@@ -841,10 +865,10 @@ def chat_reply(
             ids.append(rid)
 
     text = str(data.get("reply") or "").strip()
-    # `plan` is a request to write to the person's list and calendar. It is
-    # passed straight through — every field is re-checked in services/planner.py
-    # before anything is stored, so a hallucinated recipe id or a date in 2019
-    # cannot reach the database from here.
+    # `plan` e o cerere de scriere pe lista și în calendarul omului. Trece mai
+    # departe neatinsă: fiecare câmp se reverifică în services/planner.py
+    # înainte să se stocheze ceva, deci un id halucinat sau o dată din 2019
+    # nu pot ajunge în DB de aici.
     plan = data.get("plan") if isinstance(data.get("plan"), dict) else None
     return {
         "text": text or CHAT_FALLBACK,

@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """Learn: fagurele de lecții, quiz-urile și provocările zilnice.
 
-Corectarea quiz-urilor se face exclusiv aici. Endpoint-urile de citire nu
-trimit niciodată indexul răspunsului corect, așa că un quiz nu poate fi trecut
+Corectarea quiz-urilor se face exclusiv aici. Endpointurile de citire nu
+trimit niciodată indexul răspunsului corect, deci un quiz nu se poate trece
 citind răspunsul din DevTools.
+
+Regulile de stare și de XP sunt în services/learn.py.
 """
 from datetime import datetime
 
@@ -31,7 +33,7 @@ def get_tree(
     db: Session = Depends(get_db),
     user: models.User = Depends(deps.get_current_user),
 ):
-    """Fagurele complet + rank-ul userului + provocările zilei."""
+    """Fagurele complet, rank-ul userului și provocările zilei."""
     data = learn.build_tree(db, user)
     data["challenges"] = challenges.list_for_user(db, user)
     return data
@@ -39,7 +41,7 @@ def get_tree(
 
 @router.get("/ranks")
 def rank_table():
-    """Tabelul celor 16 trepte — public, folosit și pentru insignele de rețetă."""
+    """Tabelul celor 16 trepte. Public, folosit și pentru insignele de rețetă."""
     return {"tiers": ranks.table(), "ranks": ranks.RANKS}
 
 
@@ -59,8 +61,10 @@ def submit_quiz(
     db: Session = Depends(get_db),
     user: models.User = Depends(deps.require_not_suspended),
 ):
-    """Quiz-ul de trecere. 100% corect îl termină; orice greșeală pune lecția în
-    cooldown 24 de ore."""
+    """Quiz-ul de trecere.
+
+    100% corect termină lecția. Orice greșeală pune lecția în cooldown 24 de ore.
+    """
     lesson = _lesson_or_404(db, slug)
     progress = learn.get_or_create_progress(db, user.id, lesson.id)
 
@@ -91,7 +95,7 @@ def submit_quiz(
         progress.cooldown_until = None
         result.update(learn.award_xp(user, lesson.xp or 0))
         db.commit()
-        # Recalculăm arborele: o lecție terminată (sau un rank nou) poate
+        # Recalculăm arborele. O lecție terminată, sau un rank nou, poate
         # debloca alte hexagoane, iar interfața le anunță imediat.
         tree = learn.build_tree(db, user)
         result["unlocked"] = [
@@ -114,8 +118,11 @@ def submit_mastery(
     db: Session = Depends(get_db),
     user: models.User = Depends(deps.require_not_suspended),
 ):
-    """Quiz-ul avansat. Trecerea lui NU dă mastery singură — mai trebuie și o
-    rețetă gătită confirmată de AI după terminarea lecției."""
+    """Quiz-ul avansat.
+
+    Trecerea lui nu dă mastery singură. Mai trebuie și o rețetă gătită,
+    confirmată de AI, după terminarea lecției.
+    """
     lesson = _lesson_or_404(db, slug)
     progress = learn.get_or_create_progress(db, user.id, lesson.id)
 
@@ -153,8 +160,8 @@ def submit_mastery(
         result.update(learn.award_xp(user, lesson.mastery_xp or 0))
         result["mastered"] = True
     else:
-        # Quiz-ul rămâne trecut; mastery-ul se acordă la următoarea gătire
-        # confirmată (vezi routers.reviews.verify_cook).
+        # Quiz-ul rămâne trecut. Mastery-ul se acordă la următoarea gătire
+        # confirmată, vezi routers/reviews.verify_cook.
         result["mastered"] = False
 
     db.commit()

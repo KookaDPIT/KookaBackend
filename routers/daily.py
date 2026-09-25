@@ -1,4 +1,4 @@
-"""Daily Global Dish."""
+"""GET /daily-dish. Algoritmul de alegere e în services/daily_dish.py."""
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 

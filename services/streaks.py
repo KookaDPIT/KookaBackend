@@ -1,21 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Streak-urile — câte zile la rând ai ținut un obicei.
+"""Streak-urile: câte zile la rând ai ținut un obicei.
 
 Patru la număr, trei simple și unul compus:
 
     lessons  o lecție terminată în ziua aia
     daily    o provocare zilnică revendicată
-    cooking  o rețetă gătită și confirmată de AI (oricare, tu alegi)
+    cooking  o rețetă gătită și confirmată de AI
     supreme  toate trei în aceeași zi
 
-Ca și rank-ul, un streak NU se stochează: e o funcție pură de datele
-evenimentelor pe care le avem deja. Un contor stocat trebuie decrementat de
-cineva la miezul nopții — adică un scheduler, sau un cron care uită să ruleze,
-sau un utilizator care își pierde streak-ul pentru că serverul a fost repornit.
-Calculat din istoric, răspunsul e corect indiferent când e pusă întrebarea.
+Ca și rank-ul, un streak nu se stochează. E o funcție pură de evenimentele pe
+care le avem deja. Un contor stocat ar trebui scăzut de cineva la miezul
+nopții, deci un scheduler, deci un cron care uită să ruleze și un utilizator
+care își pierde streak-ul pentru că serverul a fost repornit. Calculat din
+istoric, răspunsul e corect indiferent când se pune întrebarea.
 
-Ziua e UTC, la fel ca `daily_challenges.date` și `DailyDish.date`, ca să existe
-o singură definiție a lui „azi" în tot backend-ul.
+Ziua e UTC, la fel ca `daily_challenges.date` și `DailyDish.date`, ca „azi" să
+însemne același lucru în tot backendul.
 """
 from datetime import date, datetime, timedelta
 
@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 import models
 
-# Cele patru, în ordinea în care le arată interfața.
+# Cele patru, în ordinea din interfață.
 KINDS = ["lessons", "daily", "cooking", "supreme"]
 
 
@@ -32,7 +32,7 @@ def today() -> date:
 
 
 def _days(values) -> set:
-    """Datele (UTC) la care s-a întâmplat ceva, ignorând orele."""
+    """Datele UTC la care s-a întâmplat ceva, fără ore."""
     out = set()
     for value in values:
         if isinstance(value, datetime):
@@ -46,8 +46,8 @@ def _longest(days: set) -> int:
     """Cea mai lungă serie de zile consecutive din tot istoricul."""
     best = 0
     for day in days:
-        # numărăm doar din capătul de început al unei serii, ca să nu
-        # re-parcurgem aceeași serie o dată pentru fiecare zi din ea
+        # Numărăm doar din capătul de început al unei serii, altfel am
+        # re-parcurge aceeași serie o dată pentru fiecare zi din ea.
         if day - timedelta(days=1) in days:
             continue
         run = 1
@@ -60,10 +60,10 @@ def _longest(days: set) -> int:
 def _streak(days: set, now: date) -> dict:
     """Starea unui singur streak.
 
-    Un streak e viu dacă ultima zi bifată e azi SAU ieri. Ieri contează pentru
-    că altfel ziua ar începe cu streak-ul deja pierdut la 00:01, înainte să ai
-    ocazia să faci ceva — ceea ce ar transforma obiceiul într-o pedeapsă.
-    `at_risk` e exact starea aia: încă îl ai, dar îl pierzi la noapte.
+    Un streak e viu dacă ultima zi bifată e azi sau ieri. Ieri contează: fără
+    el, ziua ar începe cu streak-ul deja pierdut la 00:01, înainte să ai cum
+    să faci ceva. `at_risk` e exact starea aia, încă îl ai dar îl pierzi la
+    noapte.
     """
     done_today = now in days
     anchor = now if done_today else now - timedelta(days=1)
@@ -79,9 +79,9 @@ def _streak(days: set, now: date) -> dict:
         "alive": current > 0,
         "at_risk": current > 0 and not done_today,
         "last_day": max(days).isoformat() if days else None,
-        # Ultimele 7 zile, cea mai veche prima, azi ultima. Un număr singur
-        # spune „4" și atât; șirul ăsta arată și unde s-a rupt, ceea ce e
-        # jumătate din motivul pentru care cineva se uită la un streak.
+        # Ultimele 7 zile, cea mai veche prima. Un număr singur spune „4" și
+        # atât. Șirul arată și unde s-a rupt, ceea ce e jumătate din motivul
+        # pentru care cineva se uită la un streak.
         "week": [(now - timedelta(days=offset)) in days for offset in range(6, -1, -1)],
     }
 
@@ -92,8 +92,8 @@ def _lesson_days(db: Session, user_id: int) -> set:
         .filter(models.LessonProgress.user_id == user_id)
         .all()
     )
-    # Mastery-ul e tot o lecție terminată în ziua aia — de multe ori într-o zi
-    # diferită de quiz-ul de bază, deci amândouă datele contează.
+    # Mastery-ul e tot o lecție terminată în ziua aia, de multe ori într-o zi
+    # diferită de quiz-ul de bază. Contează amândouă datele.
     return _days([value for row in rows for value in row])
 
 
@@ -121,8 +121,8 @@ def for_user(db: Session, user) -> dict:
     lessons = _lesson_days(db, user.id)
     daily = _daily_days(db, user.id)
     cooking = _cooking_days(db, user.id)
-    # Supreme nu e „cel mai lung dintre celelalte trei": e ziua în care le-ai
-    # făcut pe toate. Intersecția, nu maximul.
+    # Supreme nu e cel mai lung dintre celelalte trei. E ziua în care le-ai
+    # făcut pe toate, deci intersecția, nu maximul.
     supreme = lessons & daily & cooking
 
     return {

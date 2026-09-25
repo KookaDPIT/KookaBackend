@@ -1,4 +1,14 @@
-"""Rețete: creare (cu analiză AI), listare/filtrare, detaliu, editare, ștergere."""
+"""Rețete: creare, listare și filtrare, detaliu, editare, ștergere, traducere.
+
+Trei lucruri de știut înainte să umbli aici:
+
+  * la creare și la editare, conținutul trece prin services/ai.py de două ori:
+    o dată pentru traducere spre engleză, o dată pentru nutriție și moderare
+  * când AI-ul nu răspunde, rețeta se publică oricum, dar intră în coada de
+    moderare. Vezi `unchecked` în create_recipe()
+  * o rețetă peste rank-ul tău se deschide. `above_rank` e un avertisment, nu
+    o blocare
+"""
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
@@ -30,8 +40,10 @@ def create_recipe(
 
     steps = [s.model_dump(exclude_none=True) for s in data.steps]
 
-    # ---- traducere: site-ul e în engleză, autorul poate scrie în limba lui ----
-    # Ce ajunge în DB e mereu engleza; `source_language` reține originalul.
+    # ---- traducere ----
+    # Autorul scrie în limba lui, în DB ajunge engleza, iar `source_language`
+    # reține originalul. Când modelul nu răspunde, textul rămâne cum a fost
+    # scris; serializers.content_language() spune mai târziu care e cazul.
     tr = ai.translate_recipe(
         title=data.title,
         description=data.description,
@@ -44,7 +56,7 @@ def create_recipe(
     steps = tr["steps"]
 
     # Ce a scris autorul, exact cum a scris. Se păstrează doar când chiar s-a
-    # tradus: pentru o rețetă deja în engleză ar fi o a doua copie identică.
+    # tradus. Pentru o rețetă deja în engleză ar fi o a doua copie identică.
     original = (
         {
             "title": data.title.strip(),
@@ -58,7 +70,7 @@ def create_recipe(
         else {"title": "", "description": "", "ingredients": "", "steps": ""}
     )
 
-    # ---- analiză AI: nutriție + moderare (pe textul deja în engleză) ----
+    # ---- analiză AI: nutriție și moderare, pe textul deja în engleză ----
     analysis = ai.analyze_recipe(
         title=title,
         ingredients=ingredients,
@@ -67,17 +79,18 @@ def create_recipe(
     )
 
     if not analysis["valid"]:
-        # conținut clar invalid -> respinge
+        # conținut clar invalid, deci respingem
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Rețeta a fost respinsă de verificarea AI: {analysis['reason']}",
         )
 
-    # AI-ul n-a răspuns (cheie lipsă, model retras, Groq picat): `valid=True` de
-    # mai sus e valoarea implicită din fallback, nu un verdict. Rețeta se
-    # publică — nimeni nu-și pierde munca fiindcă ne-a picat un furnizor — dar
-    # intră în coada de moderare, ca s-o vadă un om. Altfel, cât timp AI-ul e
-    # jos, orice spam trece nevăzut.
+    # AI-ul n-a răspuns: cheie lipsă, model retras, Groq picat. `valid=True` de
+    # mai sus e valoarea implicită din fallback, nu un verdict.
+    #
+    # Rețeta se publică, fiindcă nimeni nu-și pierde munca pentru că ne-a picat
+    # un furnizor. Dar intră în coada de moderare, ca s-o vadă un om. Altfel,
+    # cât timp AI-ul e jos, orice spam trece nevăzut.
     unchecked = not analysis.get("ok")
     moderation_status = "flagged" if unchecked else "ok"
     ai_notes = analysis.get("reason", "")
@@ -92,7 +105,7 @@ def create_recipe(
         duration_min=data.duration_min,
         difficulty=data.difficulty,
         rank=ranks.normalize_recipe_rank(data.rank, data.difficulty),
-        # Ce alege autorul are prioritate; analizorul completează când n-a ales
+        # Ce alege autorul are prioritate. Analizorul completează când n-a ales
         # nimic, iar euristica din titlu e ultima plasă.
         course=(
             courses.normalize(getattr(data, "course", ""))
@@ -126,9 +139,10 @@ def create_recipe(
     return serializers.recipe_to_dict(db, recipe, full=True)
 
 
-# Filtrele care nu se pot exprima în SQL (au nevoie de ingredientele și
-# alergenii deserializați, sau de semnalul social al celui care se uită) se
-# rezolvă în Python peste un lot mai mare decât pagina cerută.
+# Filtrele care nu se pot scrie ca SQL, fiindcă au nevoie de ingredientele și
+# alergenii deserializați sau de semnalul social al celui care se uită. Se
+# rezolvă în Python, peste un lot mai mare decât pagina cerută. Vezi
+# services/feed.py.
 _SMART_FILTERS = {"recommended", "fridge", "allergy_free"}
 _SMART_POOL = 240
 
@@ -169,9 +183,9 @@ def list_recipes(
         query = query.filter(models.Recipe.duration_min <= 30, models.Recipe.duration_min > 0)
 
     if filter == "random":
-        # `func.random()` există și pe Postgres, și pe SQLite; `func.rand()`
-        # (MySQL) nu ne interesează. E plasa de siguranță a feed-ului: mai bine
-        # câteva rețete la întâmplare decât un ecran gol.
+        # `func.random()` există și pe Postgres, și pe SQLite. E plasa de
+        # siguranță a feed-ului: mai bine câteva rețete la întâmplare decât un
+        # ecran gol.
         query = query.order_by(func.random())
     elif filter == "top_rated":
         # ordonăm după rating mediu
@@ -199,10 +213,13 @@ def list_recipes(
 
 # ==========================================================================
 #  TRADUCERE LA CERERE
-#  Rețeta se salvează în engleză și se citește în limba autorului. Asta e a
-#  treia variantă: limba CITITORULUI, și numai dacă o cere apăsând butonul.
-#  Nu se traduce nimic automat — ar însemna un apel la model pentru fiecare
+#
+#  A treia variantă a unei rețete, după engleza din DB și textul autorului:
+#  limba cititorului, și numai dacă apasă butonul.
+#
+#  Nu se traduce nimic automat. Ar însemna un apel la model pentru fiecare
 #  rețetă deschisă de oricine, pentru o traducere pe care majoritatea n-o vrea.
+#  Rezultatul se cache-uiește în recipe_translations.
 # ==========================================================================
 
 @router.post("/{recipe_id}/translate")
@@ -220,7 +237,7 @@ def translate_recipe_on_demand(
     if not recipe:
         raise HTTPException(404, "Rețeta nu există")
 
-    # Exact aceleași porți ca la deschiderea rețetei — altfel traducerea ar fi
+    # Exact aceleași porți ca la deschiderea rețetei. Altfel traducerea ar fi
     # o portiță prin care se citește o rețetă ascunsă.
     staff = visibility.is_staff(viewer)
     mine = recipe.author_id == viewer.id
@@ -236,12 +253,12 @@ def translate_recipe_on_demand(
         "steps": json.loads(recipe.steps or "[]"),
     }
 
-    # Cere traducerea în limba în care rețeta E DEJA scrisă: n-are ce traduce.
+    # Ceri traducerea în limba în care rețeta e deja scrisă, deci n-are ce
+    # traduce.
     #
-    # Comparația e cu limba reală a textului, nu cu "en". Când traducerea de la
-    # publicare n-a putut rula, în câmpurile rețetei a rămas textul autorului,
-    # iar un `lang=en` pe o rețetă românească ar fi întors româna curată
-    # etichetată drept engleză.
+    # Comparația e cu limba reală a textului, nu cu „en". Când traducerea de la
+    # publicare n-a rulat, în câmpuri a rămas textul autorului, iar un lang=en
+    # pe o rețetă românească ar fi întors româna curată, etichetată engleză.
     content_lang = serializers.content_language(recipe)
     if code == content_lang:
         return {
@@ -278,12 +295,12 @@ def translate_recipe_on_demand(
         target=code,
     )
     if not result["ok"]:
-        # 503, nu 200 cu textul original: butonul trebuie să poată spune „n-a
-        # mers, încearcă din nou", nu să pară că a tradus și n-a schimbat nimic.
+        # 503, nu 200 cu textul original. Butonul trebuie să poată spune „n-a
+        # mers, încearcă din nou", nu să pară că a tradus fără să schimbe ceva.
         raise HTTPException(503, "Traducerea nu e disponibilă acum")
 
-    # Un cache, nu o sursă de adevăr: dacă scrierea pică, tot răspundem cu
-    # traducerea proaspătă și o vom recalcula data viitoare.
+    # Un cache, nu o sursă de adevăr. Dacă scrierea pică, tot răspundem cu
+    # traducerea proaspătă și o recalculăm data viitoare.
     try:
         db.add(
             models.RecipeTranslation(
@@ -325,18 +342,18 @@ def get_recipe(
     # ascunsă de moderator: doar autorul și echipa o mai pot deschide
     if recipe.moderation_status == "hidden" and not (staff or mine):
         raise HTTPException(404, "Rețeta nu există")
-    # autor suspendat/blocat: 404, nu 403 — un 403 ar confirma că există
+    # autor suspendat sau blocat: 404, nu 403. Un 403 ar confirma că există.
     if recipe.author_id in visibility.hidden_author_ids(db, viewer):
         raise HTTPException(404, "Rețeta nu există")
 
-    # Rank: o rețetă peste rank-ul tău se deschide și se poate găti. Blocarea
-    # dură (403) însemna că nici nu vedeai ce ai de câștigat gătind mai mult,
-    # iar o rețetă „prea grea" nu e periculoasă — e doar mai grea. Trimitem
-    # totuși ce rank cere, ca interfața să te întrebe „ești sigur?" la Gătește.
+    # O rețetă peste rank-ul tău se deschide și se poate găti. Blocarea dură
+    # însemna că nici nu vedeai ce ai de câștigat gătind mai mult, iar o rețetă
+    # mai grea nu e periculoasă. Trimitem totuși ce rank cere, ca interfața să
+    # te întrebe înainte de Gătește.
     recipe_rank = ranks.normalize_recipe_rank(recipe.rank, recipe.difficulty)
-    # Deliberat fără excepția pentru moderatori: asta nu mai e o permisiune, e
-    # o atenționare despre dificultate, iar dificultatea nu ține de rol. Doar
-    # autorul e scutit — el știe ce a scris.
+    # Deliberat fără excepție pentru moderatori. Asta nu e o permisiune, e o
+    # atenționare despre dificultate, iar dificultatea nu ține de rol. Doar
+    # autorul e scutit, el știe ce a scris.
     above_rank = not mine and not ranks.can_access_recipe(
         viewer.xp_total if viewer else 0, recipe_rank
     )
@@ -374,13 +391,13 @@ def update_recipe(
     for field in ("title", "description", "origin", "servings", "duration_min", "difficulty"):
         if field in payload:
             setattr(recipe, field, payload[field])
-    # Rank-ul se normalizează întotdeauna: o valoare invalidă cade pe maparea
-    # din dificultate, în loc să scrie gunoi în coloană.
+    # Rank-ul se normalizează mereu. O valoare invalidă cade pe maparea din
+    # dificultate, în loc să scrie gunoi în coloană.
     if "rank" in payload or "difficulty" in payload:
         recipe.rank = ranks.normalize_recipe_rank(
             payload.get("rank", recipe.rank), recipe.difficulty
         )
-    # Un curs invalid nu suprascrie unul bun: mai bine rămâne ce era decât să
+    # Un curs invalid nu suprascrie unul bun. Mai bine rămâne ce era decât să
     # dispară rețeta din filtrul în care stătea.
     if "course" in payload:
         picked = courses.normalize(payload["course"])
@@ -398,11 +415,11 @@ def update_recipe(
         recipe.steps = json.dumps(steps, ensure_ascii=False)
         recompute = True
 
-    # Editarea poate introduce text într-o altă limbă (sau poate readuce rețeta
-    # la engleză), deci retraducem ori de câte ori s-a atins conținutul.
+    # Editarea poate introduce text în altă limbă, sau poate readuce rețeta la
+    # engleză, deci retraducem ori de câte ori s-a atins conținutul.
     if recompute or "title" in payload or "description" in payload:
         # Ce e în `recipe` acum e ce a trimis autorul la editare, deci e
-        # originalul — îl reținem ÎNAINTE de a-l suprascrie cu traducerea.
+        # originalul. Îl reținem înainte să-l suprascriem cu traducerea.
         was = {
             "title": recipe.title,
             "description": recipe.description or "",
@@ -426,8 +443,9 @@ def update_recipe(
             recipe.original_ingredients = was["ingredients"]
             recipe.original_steps = was["steps"]
         else:
-            # Editată înapoi în engleză: golim originalul, altfel butonul ar
-            # oferi „vezi originalul" și ar arăta textul de acum două versiuni.
+            # Editată înapoi în engleză, deci golim originalul. Altfel butonul
+            # ar oferi „vezi originalul" și ar arăta textul de acum două
+            # versiuni.
             recipe.original_title = ""
             recipe.original_description = ""
             recipe.original_ingredients = ""
@@ -442,9 +460,9 @@ def update_recipe(
             servings=recipe.servings,
         )
         if not analysis.get("ok"):
-            # Aceeași regulă ca la publicare: o editare pe care AI-ul n-a apucat
-            # s-o citească merge la moderare. Nu suprascriem nutriția cu forma
-            # goală din fallback — ar șterge date bune.
+            # Aceeași regulă ca la publicare: o editare pe care AI-ul n-a
+            # apucat s-o citească merge la moderare. Nu suprascriem nutriția cu
+            # forma goală din fallback, fiindcă ar șterge date bune.
             if (recipe.moderation_status or "ok") == "ok":
                 recipe.moderation_status = "flagged"
                 recipe.ai_notes = (
@@ -472,9 +490,9 @@ def delete_recipe(
     if recipe.author_id != user.id and user.role not in ("admin", "moderator"):
         raise HTTPException(403, "Nu poți șterge această rețetă")
 
-    # aceleași curățări ca pe calea de moderare: recenziile, salvările și
-    # rezervările de „felul zilei" trebuie să plece odată cu rețeta, altfel
-    # rămân fantome în activitatea și pașaportul altor conturi
+    # Aceleași curățări ca pe calea de moderare. Recenziile, salvările și
+    # rezervările de fel al zilei pleacă odată cu rețeta, altfel rămân fantome
+    # în activitatea și pașaportul altor conturi.
     db.query(models.Review).filter(models.Review.recipe_id == recipe.id).delete()
     db.query(models.SavedRecipe).filter(models.SavedRecipe.recipe_id == recipe.id).delete()
     db.query(models.DailyDish).filter(models.DailyDish.recipe_id == recipe.id).delete()
@@ -491,8 +509,10 @@ def moderate_recipe(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    """Ascunde / repune o rețetă fără ocolul prin consola de moderare — un
-    moderator care tocmai a dat peste ea trebuie s-o poată trata pe loc."""
+    """Ascunde sau repune o rețetă fără ocolul prin consola de moderare.
+
+    Un moderator care tocmai a dat peste ea o tratează pe loc.
+    """
     if not visibility.is_staff(user):
         raise HTTPException(403, "Necesită drepturi de moderator")
     recipe = db.query(models.Recipe).filter(models.Recipe.id == recipe_id).first()

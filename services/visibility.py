@@ -1,20 +1,24 @@
 """Cine are voie să vadă conținutul cui.
 
-Un singur loc pentru regula „acest cont e ascuns", ca să nu ajungă implementată
-de cinci ori ușor diferit prin routere. Un cont e ascuns când:
+Un singur loc pentru regula „acest cont e ascuns", ca să nu ajungă scrisă de
+cinci ori, ușor diferit, prin routere. Un cont e ascuns când:
 
-  * e suspendat (`suspended_until` în viitor) — sancțiune temporară;
-  * e dezactivat (`is_active` fals) — sancțiune fără termen;
-  * e blocat de cel care se uită, sau l-a blocat pe el (blocarea taie vizibilitatea
-    în ambele sensuri, altfel blochezi pe cineva și îi vezi în continuare postările).
+  * e suspendat, adică `suspended_until` e în viitor
+  * e dezactivat, adică `is_active` e fals
+  * există o blocare între el și cel care se uită, în orice sens
 
-Ascuns înseamnă complet: rețetele, postările de forum și profilul dispar din
-listări, din căutare ȘI de la accesul direct pe URL (404, nu 403 — un 403 ar
-confirma că acel cont există). Excepții deliberate:
+Blocarea taie vizibilitatea în ambele direcții. Altfel blochezi pe cineva și
+îi vezi în continuare postările.
 
-  * moderatorii și adminii văd tot, altfel n-ar avea ce modera;
-  * fiecare își vede propriul conținut, ca un cont suspendat să înțeleagă ce se
-    întâmplă când se autentifică, în loc să găsească un profil gol.
+Ascuns înseamnă complet: rețetele, postările și profilul dispar din listări,
+din căutare și de la accesul direct pe URL. Acolo răspundem 404, nu 403. Un
+403 ar confirma că acel cont există.
+
+Două excepții:
+
+  * moderatorii și adminii văd tot, altfel n-ar avea ce modera
+  * fiecare își vede propriul conținut, ca un cont suspendat să înțeleagă ce
+    se întâmplă, în loc să găsească un profil gol
 """
 from datetime import datetime
 
@@ -36,7 +40,7 @@ def is_suspended(user) -> bool:
 
 
 def is_silenced(user) -> bool:
-    """Suspendat sau dezactivat — în ambele cazuri conținutul nu se mai vede."""
+    """Suspendat sau dezactivat. În ambele cazuri conținutul nu se mai vede."""
     return is_suspended(user) or not bool(user.is_active)
 
 
@@ -57,7 +61,7 @@ def silenced_user_ids(db: Session) -> set:
 
 
 def blocked_user_ids(db: Session, viewer) -> set:
-    """Conturile dintre care și cel care se uită există o blocare, în orice sens."""
+    """Conturile între care și cel care se uită există o blocare, în orice sens."""
     if viewer is None:
         return set()
     rows = (
@@ -87,7 +91,7 @@ def hidden_author_ids(db: Session, viewer=None) -> set:
 
 
 def visible_authors(query, model, hidden_ids):
-    """Adaugă filtrul de autor pe un query, dacă e ceva de ascuns."""
+    """Adaugă filtrul de autor pe un query, când e ceva de ascuns."""
     if not hidden_ids:
         return query
     return query.filter(

@@ -1,11 +1,10 @@
 """Lista de cumpărături și calendarul de mese.
 
-Amândouă trăiau în localStorage, deci existau numai în browserul în care le
-scriseseși: adăugai ingredientele de pe telefon și pe laptop lista era goală,
-iar ștergerea datelor de site le pierdea. Acum sunt rânduri legate de cont.
+Amândouă stăteau în localStorage, deci existau doar în browserul în care le
+scriseseși. Acum sunt rânduri legate de cont.
 
-Logica de adăugare stă în `services/planner.py` pentru că asistentul din chat
-scrie prin exact aceleași funcții — vezi `routers/ai.py`.
+Logica de adăugare e în services/planner.py, fiindcă asistentul din chat scrie
+prin exact aceleași funcții. Vezi routers/ai.py.
 """
 from datetime import date
 
@@ -24,9 +23,10 @@ router = APIRouter(prefix="/planner", tags=["planner"])
 def _clean_expiry(value) -> str:
     """„YYYY-MM-DD" sau gol. Orice altceva e refuzat.
 
-    Valoarea vine dintr-un OCR de pe ambalaj, deci poate fi orice; o stocăm ca
+    Valoarea vine dintr-un OCR de pe ambalaj, deci poate fi orice. O stocăm ca
     text, dar tot ce intră trebuie să fie o dată reală, altfel lista ar afișa
-    „expiră pe 2026-13-45"."""
+    „expiră pe 2026-13-45".
+    """
     text = str(value or "").strip()
     if not text:
         return ""
@@ -49,7 +49,7 @@ def list_shopping(
     items = (
         db.query(models.ShoppingItem)
         .filter(models.ShoppingItem.user_id == user.id)
-        # nebifate întâi: în magazin te uiți la ce mai ai de luat
+        # nebifate întâi. În magazin te uiți la ce mai ai de luat.
         .order_by(models.ShoppingItem.checked.asc(), models.ShoppingItem.created_at.asc())
         .all()
     )
@@ -67,8 +67,8 @@ def add_shopping_item(
     )
     if item is None:
         raise HTTPException(400, "Scrie ce trebuie cumpărat")
-    # `add_shopping` poate întoarce un rând existent (a adunat cantitățile). O
-    # dată proaspăt scanată bate ce era acolo; una goală nu șterge nimic.
+    # add_shopping() poate întoarce un rând existent, cu cantitățile adunate.
+    # O dată proaspăt scanată bate ce era acolo. Una goală nu șterge nimic.
     expiry = _clean_expiry(data.expires_at)
     if expiry:
         item.expires_at = expiry
@@ -84,9 +84,9 @@ def update_shopping_item(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    """Editează o linie — cantitatea, unitatea, numele, sau bifarea ei.
+    """Editează o linie: cantitatea, unitatea, numele sau bifa.
 
-    Cantitatea se putea doar șterge și readăuga; acum se poate corecta pe loc,
+    Cantitatea se putea doar șterge și readăuga. Acum se corectează pe loc,
     ceea ce e ce faci de fapt în fața raftului.
     """
     item = (
@@ -113,7 +113,7 @@ def update_shopping_item(
     if "checked" in payload:
         item.checked = bool(payload["checked"])
     if "expires_at" in payload:
-        # Șirul gol e o valoare validă aici: așa se șterge o dată citită greșit.
+        # Șirul gol e valid aici. Așa se șterge o dată citită greșit.
         item.expires_at = _clean_expiry(payload["expires_at"])
 
     db.commit()
@@ -175,7 +175,7 @@ def list_meals(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    """Mesele dintr-un interval. Fără interval: săptămâna curentă."""
+    """Mesele dintr-un interval. Fără interval, săptămâna curentă."""
     if not start or not end:
         start, end = planner.week_bounds(start)
     entries = (
@@ -273,8 +273,10 @@ def meal_to_shopping(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    """Trece ingredientele unei mese planificate pe lista de cumpărături —
-    legătura evidentă dintre cele două panouri, care lipsea."""
+    """Trece ingredientele unei mese planificate pe lista de cumpărături.
+
+    Legătura dintre cele două panouri ale paginii.
+    """
     entry = (
         db.query(models.MealPlanEntry)
         .filter(

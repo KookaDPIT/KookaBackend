@@ -1,9 +1,11 @@
-"""Forum: subforumuri pe limbă, taguri pentru subiect, voturi și comentarii.
+"""Forum: subforumuri pe limbă, taguri pentru subiect, voturi, comentarii.
 
-Model de organizare: un singur forum împărțit în subforumuri **după limba în
-care scrii** (`language`). Subiectul unei postări nu mai e un subforum separat,
-ci un `tag` — așa același subiect e găsibil în toate limbile, iar cititorul
-alege întâi limba pe care o înțelege.
+Un singur forum, împărțit în subforumuri după limba în care scrii. Subiectul
+nu e un subforum separat, ci un `tag`, deci același subiect se găsește în
+toate limbile, iar cititorul alege întâi limba pe care o înțelege.
+
+Ordinea din fișier: vocabularele fixe, scorurile de sortare, serializarea,
+/meta, listarea și căutarea, scrierea, voturile, comentariile, moderarea.
 """
 import json
 import math
@@ -28,8 +30,8 @@ from services import visibility
 
 router = APIRouter(prefix="/forum", tags=["forum"])
 
-# Catalogul complet ISO 639-1 (toate cele 184 de coduri). Eticheta în engleză e
-# doar rezervă: interfața afișează numele limbii tradus, prin Intl.DisplayNames.
+# Catalogul ISO 639-1 complet, toate cele 184 de coduri. Eticheta în engleză e
+# doar rezervă: interfața afișează numele tradus, prin Intl.DisplayNames.
 LANGUAGE_NAMES = {
     "aa": "Afar", "ab": "Abkhazian", "ae": "Avestan", "af": "Afrikaans",
     "ak": "Akan", "am": "Amharic", "an": "Aragonese", "ar": "Arabic",
@@ -82,7 +84,7 @@ LANGUAGE_NAMES = {
 LANGUAGES = [{"code": code, "label": name} for code, name in sorted(LANGUAGE_NAMES.items())]
 LANGUAGE_CODES = set(LANGUAGE_NAMES)
 
-# Vocabular fix de taguri — cu text liber, „help" / „Help" / „ajutor" ar sparge
+# Vocabular fix de taguri. Cu text liber, „help", „Help" și „ajutor" ar sparge
 # filtrarea în bucăți care nu se mai regăsesc.
 TAGS = [
     {"code": "question", "emoji": "❓"},
@@ -108,15 +110,21 @@ def _age_hours(post: models.ForumPost) -> float:
 
 
 def _hot_score(post: models.ForumPost, comments: int) -> float:
-    """Gravity decay în stil Hacker News: voturile și discuția ridică postarea,
-    vârsta o coboară, ca prima pagină să nu înghețe pe un hit vechi."""
+    """Gravity decay, în stil Hacker News.
+
+    Voturile și discuția ridică postarea, vârsta o coboară, ca prima pagină să
+    nu înghețe pe un hit vechi.
+    """
     weight = (post.votes or 0) + 2 * comments
     return (weight + 1) / math.pow(_age_hours(post) + 2, 1.5)
 
 
 def _rising_score(post: models.ForumPost, comments: int) -> float:
-    """Viteză, nu total: cât a strâns pe oră de când a apărut. Doar postările
-    proaspete concurează, altfel „rising" ar fi doar „top" cu alt nume."""
+    """Viteză, nu total: cât a strâns pe oră de când a apărut.
+
+    Concurează doar postările proaspete, altfel „rising" ar fi „top" cu alt
+    nume.
+    """
     hours = _age_hours(post)
     if hours > 48:
         return -1.0
@@ -153,9 +161,11 @@ def _my_votes(db: Session, viewer, post_ids):
 
 
 def _images(post) -> list:
-    """Lista de poze a postării. Coloana e text JSON și poate lipsi cu totul pe
-    rândurile scrise înainte de migrare, deci nimic din ce vine de acolo nu e
-    de încredere fără verificare."""
+    """Lista de poze a postării.
+
+    Coloana e text JSON și poate lipsi pe rândurile scrise înainte de migrare,
+    deci nimic de acolo nu e de încredere fără verificare.
+    """
     raw = getattr(post, "images", "") or ""
     try:
         parsed = json.loads(raw)
@@ -167,8 +177,11 @@ def _images(post) -> list:
 
 
 def _clean_images(urls) -> list:
-    """Cel mult 6 URL-uri, fără goluri. Limita ține tile-ul și payload-ul mici;
-    o postare care are nevoie de mai mult de șase poze are nevoie de un album."""
+    """Cel mult 6 URL-uri, fără goluri.
+
+    Limita ține tile-ul și payload-ul mici. O postare care are nevoie de mai
+    mult de șase poze are nevoie de un album.
+    """
     out = []
     for u in (urls or [])[:6]:
         u = str(u).strip()
@@ -192,7 +205,7 @@ def _post_to_dict(post, comments=0, my_vote=0, with_body=False):
         "author": serializers.author_mini(post.author),
         "created_at": iso_utc(post.created_at),
     }
-    # în listă trimitem doar un fragment: tile-urile afișează cel mult 2-3 rânduri
+    # În listă trimitem doar un fragment. Tile-urile afișează 2-3 rânduri.
     body = post.body or ""
     data["excerpt"] = body[:180] + ("…" if len(body) > 180 else "")
     if with_body:
@@ -223,10 +236,13 @@ def meta(
     db: Session = Depends(get_db),
     viewer: models.User = Depends(get_current_user_optional),
 ):
-    """Tot ce are nevoie interfața ca să deseneze filtrele: limbile cu numărul
-    de postări, tagurile, și tagurile în tendință din ultimele 7 zile."""
-    # numărătorile trebuie să reflecte ce se poate chiar deschide, altfel un
-    # subforum arată „3 postări" și se deschide gol
+    """Tot ce-i trebuie interfeței ca să deseneze filtrele.
+
+    Limbile cu numărul de postări, tagurile, și tagurile în tendință din
+    ultimele 7 zile.
+    """
+    # Numărătorile reflectă ce se poate chiar deschide. Altfel un subforum
+    # arată „3 postări" și se deschide gol.
     visible = visibility.visible_authors(
         db.query(models.ForumPost).filter(models.ForumPost.moderation_status == "ok"),
         models.ForumPost,
@@ -258,9 +274,9 @@ def meta(
         .all()
     )
 
-    # `languages` = subforumurile care chiar există (au cel puțin o postare),
-    # cele mai populate primele. `all_languages` e catalogul întreg, pentru
-    # selectorul din care poți deschide un subforum nou în orice limbă.
+    # `languages` sunt subforumurile care chiar există, adică au cel puțin o
+    # postare, cele mai populate primele. `all_languages` e catalogul întreg,
+    # pentru selectorul din care deschizi un subforum nou în orice limbă.
     active = sorted(
         (
             {"code": code, "label": LANGUAGE_NAMES.get(code, code), "posts": int(n or 0)}
@@ -311,15 +327,15 @@ def list_posts(
 
     term = q.strip()
     if term:
-        # Un termen numeric e căutare după ID — e singurul mod de a nimeri exact
+        # Un termen numeric e căutare după ID. E singurul mod de a nimeri exact
         # o postare al cărei titlu nu ți-l amintești. Restul caută în titlu.
         if term.lstrip("#").isdigit():
             query = query.filter(models.ForumPost.id == int(term.lstrip("#")))
         else:
             query = query.filter(func.lower(models.ForumPost.title).like(f"%{term.lower()}%"))
 
-    # O căutare după ID trece peste filtre: altfel ai da ID-ul corect și ai
-    # primi „niciun rezultat" doar pentru că ești pe alt subforum.
+    # O căutare după ID trece peste filtre. Altfel ai da ID-ul corect și ai
+    # primi „niciun rezultat" doar fiindcă ești pe alt subforum.
     id_lookup = bool(term) and term.lstrip("#").isdigit()
     if not id_lookup:
         if language.strip():
@@ -372,7 +388,7 @@ def get_post(
     post.views = (post.views or 0) + 1
     db.commit()
 
-    # blocarea taie și comentariile — vezi services/visibility.py
+    # blocarea taie și comentariile, vezi services/visibility.py
     hidden_authors = visibility.hidden_author_ids(db, viewer)
     comment_query = db.query(models.ForumComment).filter(
         models.ForumComment.post_id == post_id
@@ -452,8 +468,8 @@ def update_post(
         if len(payload["title"]) < 5:
             raise HTTPException(400, "Titlul trebuie să aibă cel puțin 5 caractere")
 
-    # `images` ajunge în DB ca text JSON, nu ca listă Python — restul câmpurilor
-    # sunt coloane simple și merg prin setattr ca până acum.
+    # `images` ajunge în DB ca text JSON, nu ca listă Python. Restul câmpurilor
+    # sunt coloane simple și merg prin setattr.
     if "images" in payload:
         payload["images"] = json.dumps(_clean_images(payload["images"]), ensure_ascii=False)
 
@@ -589,7 +605,7 @@ def moderate_post(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    """Ascunde / repune o postare direct din thread, fără drum prin consolă."""
+    """Ascunde sau repune o postare direct din thread, fără drum prin consolă."""
     if not _can_moderate(user):
         raise HTTPException(403, "Necesită drepturi de moderator")
     post = db.query(models.ForumPost).filter(models.ForumPost.id == post_id).first()

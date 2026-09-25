@@ -1,4 +1,7 @@
-"""Upload de imagini pe ImageKit (proxy securizat prin backend)."""
+"""POST /upload. Proxy către ImageKit, ca să nu expunem cheia privată.
+
+Logica de urcare e în services/imagekit.py.
+"""
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 
 import models

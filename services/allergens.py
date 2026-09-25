@@ -1,15 +1,14 @@
-"""Alergeni: vocabular canonic + potrivire tolerantă.
+"""Alergeni: vocabular canonic și potrivire tolerantă.
 
-Alergenii rețetelor sunt scriși de model în engleză, în text liber („Tree
-nuts", „Nuts", „Milk"), iar cei ai utilizatorului sunt bifați dintr-o listă.
-Ca cele două să se întâlnească, totul trece prin `canon()`: sinonimele cad pe
-aceeași cheie, iar ce nu e recunoscut rămâne ca text normalizat — o alergie
-scrisă de mână („mango") tot poate fi filtrată.
+Alergenii rețetelor îi scrie modelul în engleză, în text liber: „Tree nuts",
+„Nuts", „Milk". Cei ai utilizatorului sunt bifați dintr-o listă fixă. Ca cele
+două să se întâlnească, totul trece prin canon(): sinonimele cad pe aceeași
+cheie, iar ce nu e recunoscut rămâne ca text normalizat, deci o alergie scrisă
+de mână tot se poate filtra.
 """
 
-# Cele 14 alergene din Regulamentul UE 1169/2011, în ordinea în care le
-# arătăm în interfață. `label` e engleza — site-ul e în engleză, la fel ca
-# rețetele traduse.
+# Cele 14 alergene din Regulamentul UE 1169/2011, în ordinea din interfață.
+# `label` e în engleză, ca restul conținutului.
 ALLERGENS = [
     {"id": "gluten",      "label": "Gluten",           "emoji": "🌾"},
     {"id": "milk",        "label": "Milk & dairy",     "emoji": "🥛"},
@@ -30,7 +29,7 @@ ALLERGENS = [
 ALLERGEN_IDS = [a["id"] for a in ALLERGENS]
 ALLERGEN_BY_ID = {a["id"]: a for a in ALLERGENS}
 
-# Cum poate să scrie modelul (sau utilizatorul) fiecare alergen.
+# Cum poate să scrie modelul, sau utilizatorul, fiecare alergen.
 _SYNONYMS = {
     "gluten": ("gluten", "wheat", "cereals containing gluten", "barley", "rye",
                "spelt", "flour", "bread"),
@@ -64,8 +63,11 @@ for _id, _words in _SYNONYMS.items():
 
 
 def canon(value: str) -> str:
-    """Cheia canonică pentru un alergen scris oricum. Ce nu e în vocabular se
-    întoarce normalizat (lowercase, fără spații în plus), nu aruncat."""
+    """Cheia canonică pentru un alergen scris oricum.
+
+    Ce nu e în vocabular se întoarce normalizat, lowercase și fără spații în
+    plus. Nu se aruncă.
+    """
     text = (value or "").strip().lower()
     if not text:
         return ""
@@ -107,7 +109,7 @@ def recipe_keys(allergens: dict) -> set:
 
 
 def conflicts(user_keys, allergens: dict) -> list:
-    """Intersecția — ce anume din rețetă lovește alergiile declarate."""
+    """Intersecția: ce din rețetă lovește alergiile declarate."""
     if not user_keys:
         return []
     return sorted(recipe_keys(allergens) & set(user_keys))

@@ -1,24 +1,27 @@
 # -*- coding: utf-8 -*-
-"""Trofeele — pe modelul PlayStation: bronz, argint, aur, ascunse, platină.
+"""Trofeele, pe modelul PlayStation: bronz, argint, aur, ascunse, platină.
 
-Structura, și de ce e așa
--------------------------
-Un trofeu e o întrebare despre istoricul unui utilizator. Sunt 60+ de
-întrebări, iar dacă fiecare și-ar interoga singură baza de date, deschiderea
-paginii ar însemna 60 de interogări.
+Cum e structurat
+----------------
+Un trofeu e o întrebare despre istoricul unui utilizator. Sunt peste 60 de
+întrebări. Dacă fiecare și-ar interoga singură baza, deschiderea paginii ar
+însemna 60 de interogări.
 
-Deci se strâng o dată toate faptele (`collect_facts`) și fiecare trofeu e o
-funcție pură peste dicționarul ăla. Adăugarea unui trofeu nou înseamnă o linie
-în catalog; dacă are nevoie de o informație nouă, un singur câmp în facts.
+Deci faptele se strâng o dată, în collect_facts(), și fiecare trofeu e o
+funcție pură peste dicționarul ăla. Un trofeu nou înseamnă o linie în catalog.
+Dacă are nevoie de o informație nouă, un câmp în facts.
 
-Câștigarea se STOCHEAZĂ (`EarnedTrophy`), spre deosebire de rank și streak-uri
-care se calculează. Motivul e că aici contează *când*: „ai câștigat Iron Chef"
-e un eveniment care se anunță o dată, iar dacă ar fi recalculat la fiecare
-cerere n-am ști niciodată dacă l-am anunțat deja. Evaluarea rămâne sursa
-adevărului — rândul stocat notează doar momentul.
+Câștigarea se stochează în `EarnedTrophy`, spre deosebire de rank și de
+streak-uri, care se calculează. Aici contează când: „ai câștigat Iron Chef" e
+un eveniment anunțat o dată. Recalculat la fiecare cerere, n-am ști niciodată
+dacă l-am anunțat deja. Evaluarea rămâne sursa adevărului, rândul stocat
+notează doar momentul.
 
-Platina e specială: se ia când toate celelalte sunt luate. Nu e o condiție
-peste date, e o condiție peste trofee, deci se evaluează la urmă.
+Platina e specială. Se ia când toate celelalte sunt luate, deci e o condiție
+peste trofee, nu peste date, și se evaluează la urmă.
+
+Ordinea din fișier: grupele, collect_facts(), predicatele ajutătoare,
+catalogul, evaluarea și stocarea.
 """
 from datetime import datetime, timedelta
 
@@ -30,7 +33,7 @@ import serializers
 BRONZE, SILVER, GOLD, HIDDEN, PLATINUM = "bronze", "silver", "gold", "hidden", "platinum"
 TIERS = [BRONZE, SILVER, GOLD, HIDDEN, PLATINUM]
 
-# Ordinea în care le arată interfața, și eticheta fiecărei grupe.
+# Ordinea din interfață și eticheta fiecărei grupe.
 TIER_META = {
     BRONZE:   {"name": "Bronze",   "order": 0},
     SILVER:   {"name": "Silver",   "order": 1},
@@ -51,9 +54,9 @@ def _day(dt):
 def collect_facts(db: Session, user: models.User) -> dict:
     """Tot ce le trebuie trofeelor, în cât mai puține interogări.
 
-    Câmpurile sunt numite după întrebare, nu după tabelă: `cuisines` nu
-    `distinct_recipe_origins`, pentru că predicatele de mai jos se citesc mai
-    ușor așa și ele sunt partea care se schimbă des.
+    Câmpurile sunt numite după întrebare, nu după tabelă: `cuisines`, nu
+    `distinct_recipe_origins`. Predicatele de mai jos se citesc mai ușor așa,
+    și ele sunt partea care se schimbă des.
     """
     uid = user.id
 
@@ -89,7 +92,7 @@ def collect_facts(db: Session, user: models.User) -> dict:
         allergens = serializers._load_json(r.allergens, {})
         if not (allergens.get("contains") or []):
             allergen_free_cooks += 1
-        # „The Onion Incident": 5+ cepe într-o singură rețetă
+        # „The Onion Incident": 5 sau mai multe cepe într-o singură rețetă
         for ing in ings:
             text = str(ing).lower()
             if "onion" in text or "ceap" in text:
@@ -109,8 +112,8 @@ def collect_facts(db: Session, user: models.User) -> dict:
     )
     finished = [s for s in sessions if s.finished_at]
     gave_up = [s for s in sessions if s.gave_up_at and not s.finished_at]
-    # „Comeback Kid" / „Second Try": ai abandonat o rețetă și ai terminat-o mai
-    # târziu. Compararea se face pe rețetă, nu pe sesiune.
+    # „Comeback Kid" și „Second Try": ai abandonat o rețetă și ai terminat-o
+    # mai târziu. Comparația se face pe rețetă, nu pe sesiune.
     gave_up_recipes = {s.recipe_id for s in gave_up}
     finished_recipes = {s.recipe_id for s in finished}
     comebacks = gave_up_recipes & finished_recipes
@@ -283,14 +286,16 @@ def _weekday_cook(f) -> bool:
 
 
 def _weekend_pair(f) -> bool:
-    """Sâmbătă ȘI duminică — nu neapărat în același weekend, ca „Weekend Chef"
-    să nu depindă de a găti de două ori în 48 de ore."""
+    """Sâmbătă și duminică, nu neapărat în același weekend.
+
+    Altfel „Weekend Chef" ar depinde de a găti de două ori în 48 de ore.
+    """
     days = f["cook_day_set"]
     return any(d.weekday() == 5 for d in days) and any(d.weekday() == 6 for d in days)
 
 
 def _cooked_between(f, start_hour: int, end_hour: int) -> bool:
-    """Ore locale-UTC. Intervalul poate trece peste miezul nopții."""
+    """Ore locale minus UTC. Intervalul poate trece peste miezul nopții."""
     for hour in f["cooked_hours"]:
         if start_hour <= end_hour:
             if start_hour <= hour < end_hour:
@@ -313,9 +318,9 @@ def _count_between(f, start_hour: int, end_hour: int) -> int:
 def _fast_finish(f) -> bool:
     """Terminat în sub jumătate din timpul estimat al rețetei.
 
-    Pragul de 3 minute există pentru că o sesiune deschisă și încheiată imediat
-    (ai gătit înainte, ai venit doar să încarci poza) ar lua trofeul fără să fi
-    gătit nimic repede.
+    Pragul de 3 minute există fiindcă o sesiune deschisă și încheiată imediat,
+    adică ai gătit înainte și ai venit doar să încarci poza, ar lua trofeul
+    fără să fi gătit nimic repede.
     """
     for s in f["finished_sessions"]:
         minutes = f["durations"].get(s.id)
@@ -339,9 +344,9 @@ def _slow_finish(f) -> bool:
 # ==========================================================================
 # CATALOGUL
 # ==========================================================================
-# `check` primește `facts` și întoarce bool. `progress` (opțional) întoarce
-# (curent, țintă) ca bara să arate cât mai ai — un trofeu care cere 30 de
-# provocări e o promisiune mai bună decât o promisiune tăcută.
+# `check` primește `facts` și întoarce bool. `progress`, opțional, întoarce
+# (curent, țintă), ca bara să arate cât mai ai. Un trofeu care cere 30 de
+# provocări e o promisiune mai bună decât una tăcută.
 
 def _T(id, tier, name, desc, check, progress=None):
     return {
@@ -528,7 +533,7 @@ CATALOGUE = [
        lambda f: _boils_water(f)),
 ]
 
-# Platina stă în afara catalogului: condiția ei e „toate celelalte", deci se
+# Platina stă în afara catalogului. Condiția ei e „toate celelalte", deci se
 # evaluează după ce se știe rezultatul lor.
 PLATINUM_TROPHY = {
     "id": "master_chef",
@@ -573,10 +578,10 @@ def _boils_water(f) -> bool:
 # ==========================================================================
 
 def evaluate(db: Session, user: models.User) -> dict:
-    """Ce are, ce nu are, cât mai are de făcut — plus platina.
+    """Ce are, ce nu are, cât mai are de făcut, plus platina.
 
     Salvează rândurile pentru trofeele nou câștigate, ca `earned_at` să fie o
-    dată reală și nu „acum, de fiecare dată când deschizi pagina".
+    dată reală, nu „acum, de fiecare dată când deschizi pagina".
     """
     facts = collect_facts(db, user)
     _enrich(db, user, facts)
@@ -654,7 +659,7 @@ def _shape(trophy, facts, row, has, progress_override=None):
     return {
         "id": trophy["id"],
         "tier": trophy["tier"],
-        # Un trofeu ascuns neluat nu-și spune numele — asta e tot rostul lui.
+        # Un trofeu ascuns neluat nu-și spune numele, ăsta e tot rostul lui.
         # Luat, se dezvăluie complet.
         "name": trophy["name"] if (has or not hidden) else "???",
         "description": trophy["description"] if (has or not hidden) else "",
@@ -672,7 +677,7 @@ def _shape(trophy, facts, row, has, progress_override=None):
 def _enrich(db: Session, user: models.User, facts: dict):
     """Faptele care cer o a doua trecere peste rețetele gătite.
 
-    Ținute separat ca `collect_facts` să rămână o listă de interogări, nu un
+    Ținute separat, ca collect_facts() să rămână o listă de interogări, nu un
     amestec de interogări și reguli.
     """
     from services import ranks
@@ -693,9 +698,9 @@ def _enrich(db: Session, user: models.User, facts: dict):
             kcals.append(recipe.calories)
         if recipe.course:
             course_counts[recipe.course] = course_counts.get(recipe.course, 0) + 1
-        # „Ambitious": la momentul gătirii, rețeta era peste rank-ul tău. Folosim
-        # rank-ul copiat în CookLog, nu cel de acum: un moderator care coboară
-        # rank-ul unei rețete nu trebuie să-ți ia trofeul.
+        # „Ambitious": la momentul gătirii, rețeta era peste rank-ul tău.
+        # Folosim rank-ul copiat în CookLog, nu cel de acum. Un moderator care
+        # coboară rank-ul unei rețete nu trebuie să-ți ia trofeul.
         if ranks.first_tier_of_rank(log.rank or "copper") > user_tier + 1:
             above_rank = True
         if not boils:
@@ -706,7 +711,7 @@ def _enrich(db: Session, user: models.User, facts: dict):
                     boils = True
                     break
 
-    # Durata estimată a rețetei, per sesiune — „Speed Chef" și „Slow and
+    # Durata estimată a rețetei, per sesiune. „Speed Chef" și „Slow and
     # Steady" compară cronometrul real cu ea.
     estimates = {}
     for session in facts["sessions"]:

@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Ramurile fundamentale: Knife Skills (6) și Heat & Searing (6)."""
+"""Ramurile fundamentale: Knife Skills (6) și Heat & Searing (6).
+
+Forma unei lecții și regulile de așezare sunt în data/lessons_seed.py.
+"""
 
 LESSONS = [
     # ================= KNIFE SKILLS =================

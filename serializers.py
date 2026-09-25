@@ -1,8 +1,16 @@
-"""Conversie obiecte ORM -> dict pentru răspunsuri JSON.
+"""Conversie obiecte ORM -> dict, pentru răspunsurile JSON.
 
-Aici se face deserializarea câmpurilor text-JSON (ingredients, steps,
-nutrition, allergens, images) și calculul câmpurilor derivate (rating mediu,
-număr recenzii, urmăritori)."""
+Ce se rezolvă aici:
+  - deserializarea câmpurilor text-JSON: ingredients, steps, nutrition,
+    allergens, images, original_*
+  - câmpurile derivate: rating mediu, număr de recenzii, urmăritori, rank
+  - ce vede cine: `viewer` decide dacă un profil privat iese complet sau
+    limitat, și dacă o rețetă e peste rank-ul lui
+
+Funcții publice: iso_utc, recipe_stats, author_mini, recipe_to_dict,
+content_language, user_to_dict, can_view_profile, user_public_limited,
+review_to_dict.
+"""
 import json
 from datetime import datetime, timezone
 
@@ -13,7 +21,7 @@ import models
 
 
 def _ranks():
-    """Import întârziat — evită un ciclu la import între module de servicii."""
+    """Import întârziat. Evită un ciclu de import între modulele de servicii."""
     from services import ranks
     return ranks
 
@@ -24,13 +32,12 @@ def _courses():
 
 
 def iso_utc(dt):
-    """ISO cu marcaj de fus orar.
+    """ISO cu marcaj de fus orar. Folosește-o pentru orice dată trimisă în JSON.
 
-    Toate datele din DB sunt scrise cu `datetime.utcnow()`, deci sunt UTC — dar
-    naive. `isoformat()` pe ele produce „2026-09-02T11:43:12", fără marcaj, iar
-    `new Date(...)` din browser citește un asemenea șir ca oră LOCALĂ. Pe o
-    mașină la UTC+3 fiecare oră afișată ieșea cu 3 ore greșită: o rețetă publicată
-    acum apărea „acum 3 ore", iar o suspendare de 24h arăta 21.
+    Datele din DB sunt scrise cu datetime.utcnow(), deci sunt UTC dar naive.
+    isoformat() pe ele dă „2026-09-02T11:43:12", fără marcaj, iar new Date() din
+    browser citește șirul ca oră locală. Pe o mașină la UTC+3 fiecare oră ieșea
+    cu 3 ore greșită: o rețetă publicată acum apărea „acum 3 ore".
     """
     if dt is None:
         return None
@@ -49,8 +56,11 @@ def _load_json(raw, default):
 
 
 def _lang_name(code: str) -> str:
-    """Numele afișabil al limbii sursă. Import întârziat: `services.ai` importă
-    la rândul lui modele, iar serializers e încărcat foarte devreme."""
+    """Numele afișabil al unei limbi, „ro" -> „Romanian".
+
+    Import întârziat: services.ai importă la rândul lui modele, iar serializers
+    se încarcă foarte devreme.
+    """
     try:
         from services import ai
         return ai.language_name(code)
@@ -88,8 +98,9 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False,
                    viewer: "models.User" = None):
     """Card (full=False) sau detaliu complet (full=True).
 
-    `viewer` e folosit doar ca să spunem dacă rețeta e peste rank-ul lui —
-    afișarea (titlu, poză, rank) rămâne vizibilă, conținutul e blocat în router.
+    `viewer` servește la două lucruri: marcarea rețetelor peste rank-ul lui și
+    alergenii care se lovesc de ale lui. Titlul, poza și rank-ul rămân vizibile
+    oricum. Accesul la conținut îl decide router-ul, nu funcția asta.
     """
     ranks = _ranks()
     from services import allergens as allergen_svc
@@ -98,8 +109,8 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False,
     rank = ranks.normalize_recipe_rank(getattr(r, "rank", ""), r.difficulty)
     rank_meta = ranks.RANK_BY_ID.get(rank, {})
     course = _courses().normalize(getattr(r, "course", ""))
-    # Alergenii circulă și pe card, nu doar pe detaliu: „Fără alergenii mei" e
-    # un filtru de listă, iar un card fără ei n-ar putea purta avertismentul.
+    # Alergenii merg și pe card, nu doar pe detaliu. „Fără alergenii mei" e un
+    # filtru de listă, iar cardul poartă avertismentul.
     allergen_data = _load_json(r.allergens, {"contains": [], "free": []})
     viewer_allergies = (
         allergen_svc.parse_user(getattr(viewer, "allergies", "")) if viewer else []
@@ -117,13 +128,13 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False,
         "rank_name": rank_meta.get("name", rank.title()),
         "rank_color": rank_meta.get("vibrant", ""),
         "rank_tier": ranks.first_tier_of_rank(rank),
-        # Blocarea e o decizie de produs: rețetele peste rank-ul tău nu se
-        # deschid. Rămân vizibile ca listing, ca să ai ce să țintești.
+        # Rețeta se deschide și peste rank-ul tău. `locked` spune doar că e mai
+        # grea decât nivelul tău, ca interfața să te întrebe înainte de gătit.
         "locked": viewer is not None
         and not ranks.can_access_recipe(viewer.xp_total, rank),
         "calories": r.calories,          # kcal per porție
-        # Tipul felului. `course` poate fi gol (rețetă neclasificată încă) —
-        # interfața arată atunci pur și simplu niciun tag, nu „main" ghicit.
+        # Tipul felului. Gol înseamnă neclasificată, și atunci interfața nu
+        # arată niciun tag. Nu ghicim „main".
         "course": course,
         "course_name": _courses().COURSE_BY_ID.get(course, {}).get("name", ""),
         "meals": _courses().meals_for(course),
@@ -131,9 +142,9 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False,
         "images": _load_json(r.images, []),
         "moderation_status": r.moderation_status,
         "allergen_contains": sorted(allergen_data.get("contains") or []),
-        # ce anume din rețetă lovește alergiile declarate de cel care se uită
+        # ce din rețetă lovește alergiile declarate de cel care se uită
         "allergen_conflicts": [allergen_svc.label_of(k) for k in clashes],
-        # limba în care a fost scrisă original (conținutul de mai jos e engleză)
+        # limba în care a scris autorul, detectată la publicare
         "source_language": getattr(r, "source_language", "") or "en",
         "is_daily_dish": r.is_daily_dish,
         "author": author_mini(r.author),
@@ -141,7 +152,7 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False,
         "avg_rating": avg,
         "review_count": count,
         "saves": saves,
-        # meta gata formatat pentru cardurile din frontend
+        # șiruri gata formatate pentru cardurile din frontend
         "meta": {
             "time": f"{r.duration_min} min" if r.duration_min else "",
             "servings": f"{r.servings} servings" if r.servings else "",
@@ -160,21 +171,11 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False,
                 "source_language_name": _lang_name(
                     getattr(r, "source_language", "") or "en"
                 ),
-                # Textul autorului, în limba lui. Absent (None) pentru rețetele
-                # scrise direct în engleză și pentru cele publicate înainte să
-                # păstrăm originalul — interfața nu oferă atunci comutatorul.
+                # Textul autorului, în limba lui. None când nu l-am păstrat,
+                # și atunci interfața nu oferă comutatorul original/engleză.
                 "original": _original_block(r),
-                # În ce limbă e, de fapt, textul din câmpurile de mai sus.
-                #
-                # Regula „conținutul e mereu engleză" ține doar cât timp
-                # traducerea chiar rulează. Când modelul e indisponibil,
-                # `translate_recipe` întoarce textul neatins, `original_*`
-                # rămân goale și în DB ajunge o rețetă scrisă în română cu
-                # `source_language='ro'`. Interfețele deduceau limba („n-are
-                # original, deci e engleză") și nimereau exact pe dos: ofereau
-                # o traducere din engleză în engleză, adică niciun buton.
-                # Aici nu e nimic de dedus — știm care dintre cele două s-a
-                # întâmplat, după cum am păstrat sau nu originalul.
+                # Limba reală a textului de mai sus. Vezi content_language()
+                # pentru de ce nu e mereu „en".
                 "content_language": content_language(r),
             }
         )
@@ -182,11 +183,18 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False,
 
 
 def content_language(r) -> str:
-    """Limba textului din `title`/`steps`/`ingredients`, așa cum e salvat.
+    """În ce limbă e textul salvat în `title`, `steps` și `ingredients`.
 
-    Dacă am păstrat un original, înseamnă că traducerea a reușit și ce e în
-    câmpurile normale e engleză. Dacă nu, textul e exact ce a scris autorul,
-    în limba detectată la publicare.
+    Regula „conținutul e mereu engleză" ține doar cât timp traducerea de la
+    publicare chiar rulează. Când modelul e indisponibil, translate_recipe
+    întoarce textul neatins: `original_*` rămân goale, iar în DB ajunge o
+    rețetă în română cu source_language='ro'.
+
+    Deci: original păstrat înseamnă traducere reușită și conținut în engleză.
+    Fără original, conținutul e exact ce a scris autorul.
+
+    Frontend-ul deducea asta singur („n-are original, deci e engleză") și
+    nimerea pe dos. De aceea câmpul vine de la backend.
     """
     if (getattr(r, "original_title", "") or "").strip():
         return "en"
@@ -194,10 +202,10 @@ def content_language(r) -> str:
 
 
 def _original_block(r):
-    """Varianta netradusă, dacă există.
+    """Varianta netradusă, când am păstrat-o. None când nu.
 
-    Câmpurile normale ale rețetei rămân engleza — pe ea se face căutarea,
-    analiza nutrițională și tot ce vede AI-ul. Asta e doar pentru citit.
+    E doar pentru citit. Căutarea, analiza nutrițională și AI-ul folosesc
+    câmpurile normale ale rețetei.
     """
     title = (getattr(r, "original_title", "") or "").strip()
     if not title:
@@ -250,7 +258,7 @@ def user_to_dict(db: Session, u: "models.User", viewer: "models.User" = None):
         "avatar_url": u.avatar_url or "",
         "cover_url": getattr(u, "cover_url", "") or "",
         "bio": u.bio or "",
-        # `level` rămâne pentru consumatorii vechi ai API-ului; rank-ul e sursa
+        # `level` rămâne pentru consumatorii vechi ai API-ului. Rank-ul e sursa
         # adevărului și se calculează din xp_total, deci nu se desincronizează.
         "level": u.level,
         "xp_total": u.xp_total,
@@ -264,7 +272,7 @@ def user_to_dict(db: Session, u: "models.User", viewer: "models.User" = None):
         "private": is_private,
         "created_at": iso_utc(u.created_at),
     }
-    # preferințele de cont sunt private — le trimitem doar posesorului
+    # Preferințele de cont sunt private. Pleacă doar către posesor.
     if is_self:
         data["theme"] = u.theme or "light"
         data["language"] = u.language or "ro"
@@ -272,9 +280,8 @@ def user_to_dict(db: Session, u: "models.User", viewer: "models.User" = None):
         data["settings"] = _load_json(getattr(u, "settings", ""), {})
         from services import allergens as allergen_svc
         data["allergies"] = allergen_svc.parse_user(getattr(u, "allergies", ""))
-        # Starea de sancțiune trebuie să ajungă la posesor, altfel interfața n-are
-        # cum să-i spună de ce nu mai poate face nimic: în DB scria „suspendat",
-        # dar /me nu raporta asta, așa că frontend-ul îl trata ca pe oricine.
+        # Sancțiunea ajunge la posesor, altfel interfața nu are cum să-i spună
+        # de ce nu mai poate face nimic.
         until = getattr(u, "suspended_until", None)
         suspended = bool(until and until > datetime.utcnow())
         data["suspended"] = suspended
@@ -295,7 +302,7 @@ def _is_following(db: Session, viewer: "models.User", u: "models.User") -> bool:
 
 
 def can_view_profile(db: Session, u: "models.User", viewer: "models.User") -> bool:
-    """Un profil privat e vizibil complet doar posesorului sau urmăritorilor."""
+    """Un profil privat se vede complet doar de posesor și de urmăritori."""
     prefs = _load_json(getattr(u, "settings", ""), {})
     if not prefs.get("privateAccount", False):
         return True
@@ -305,8 +312,10 @@ def can_view_profile(db: Session, u: "models.User", viewer: "models.User") -> bo
 
 
 def user_public_limited(db: Session, u: "models.User", viewer: "models.User" = None):
-    """Payload minim pentru un cont privat pe care nu-l urmărești: doar
-    identitatea (nume + username) + coperta, ca să poți cere follow."""
+    """Payload minim pentru un cont privat pe care nu-l urmărești.
+
+    Nume, username și copertă. Atât cât să recunoști contul și să ceri follow.
+    """
     is_self = viewer is not None and viewer.id == u.id
     followers = (
         db.query(func.count(models.Follow.id))

@@ -9,8 +9,8 @@ load_dotenv()
 SECRET_KEY = os.getenv("JWT_SECRET")
 ALGORITHM = "HS256"
 # 30 de zile. La 24 de ore, oricine deschidea aplicația a doua zi găsea
-# ecranul de autentificare — iar asta e o aplicație de bucătărie, nu o
-# bancă: costul unei reautentificări zilnice e mai mare decât riscul.
+# ecranul de autentificare. Pentru o aplicație de bucătărie, costul unei
+# reautentificări zilnice e mai mare decât riscul.
 TOKEN_EXPIRE_MINUTES = 60 * 24 * 30
 
 # --- parole ---
@@ -24,9 +24,12 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 # --- token-uri ---
 def create_token(user_id: int, role: str = "user") -> str:
-    """Token-ul poartă și rolul, ca fronted-ul să poată ascunde uneltele de
-    moderare fără un request în plus. Sursa de adevăr rămâne coloana din DB —
-    dependințele de rol (deps.require_role) recitesc mereu userul."""
+    """Token JWT valabil TOKEN_EXPIRE_MINUTES.
+
+    Poartă și rolul, ca frontend-ul să ascundă uneltele de moderare fără un
+    request în plus. Rolul din token nu dă drepturi: deps.require_role recitește
+    userul din DB la fiecare cerere, deci coloana rămâne sursa adevărului.
+    """
     expire = datetime.utcnow() + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
     payload = {"sub": str(user_id), "role": role or "user", "exp": expire}
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)

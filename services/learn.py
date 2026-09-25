@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
-"""Logica arborelui Learn: seed, stări, corectarea quiz-urilor și XP.
+"""Arborele Learn: seed, stări, corectarea quiz-urilor și XP.
 
 Regulile centrale, într-un singur loc:
 
-* O lecție e **available** dacă toate prerechizitele ei sunt terminate ȘI
-  rank-ul userului a atins `req_tier`.
-* Quiz-ul se corectează AICI, pe server. Răspunsurile corecte nu pleacă
-  niciodată către browser (vezi `public_quiz`).
-* Un quiz ratat pune lecția în cooldown 24h — în DB, nu în localStorage.
-* **Mastery** cere trei lucruri: lecția terminată, quiz-ul avansat trecut și o
-  rețetă gătită confirmată de AI *după* terminarea lecției.
+  * o lecție e available când toate prerechizitele sunt terminate și rank-ul
+    userului a atins `req_tier`
+  * quiz-ul se corectează pe server. Răspunsurile corecte nu pleacă niciodată
+    spre browser, vezi public_quiz()
+  * un quiz ratat pune lecția în cooldown 24h, în DB, nu în localStorage
+  * mastery cere trei lucruri: lecția terminată, quiz-ul avansat trecut și o
+    rețetă gătită confirmată de AI după terminarea lecției
+
+Ordinea din fișier: XP, așezarea în fagure și seed, citirea stărilor, scrierea
+progresului.
 """
 import json
 import math
@@ -28,9 +31,12 @@ MASTERY_TIER_GAP = 2      # quiz-ul avansat cere cu 2 trepte peste lecție
 
 # ---------- XP ----------
 def xp_for_tier(tier: int) -> int:
-    """XP-ul unei lecții crește cu treapta cerută, ca o lecție de Platinum să
-    conteze mai mult decât una de Copper. Calibrat astfel încât tot arborele
-    (lecții + mastery) să ducă un utilizator aproape de Chef, dar nu peste."""
+    """XP-ul unei lecții crește cu treapta cerută.
+
+    O lecție Platinum contează mai mult decât una Copper. Calibrat ca tot
+    arborele, lecții plus mastery, să ducă un utilizator aproape de Chef, dar
+    nu peste.
+    """
     return 120 + int(tier) * 22
 
 
@@ -38,29 +44,27 @@ def mastery_xp_for_tier(tier: int) -> int:
     return round(xp_for_tier(tier) * 0.5)
 
 
-# ---------- seed ----------
-# Așezarea: un fagure compact care crește din centru.
+# ---------- seed și așezarea în fagure ----------
+# Un fagure compact, crescut din centru.
 #
 # Foundations ocupă hexagonul din mijloc, iar fiecare lecție se așază pe un
-# hexagon LIPIT de lecția de care depinde — ca focul care se aprinde în mijloc
-# și se întinde din aproape în aproape. Nu există spițe și nici secțiuni
-# separate: toate cele 50 formează o singură masă continuă.
+# hexagon lipit de lecția de care depinde. Nu există spițe și nici secțiuni
+# separate: toate cele 50 formează o masă continuă.
 #
 # Direcția ramurii rămâne, dar doar ca preferință slabă la alegerea celulei
-# libere, cât să nu se încurce ramurile între ele. Compactitatea are prioritate,
-# deci forma iese rotundă, nu în raze.
+# libere, cât să nu se încurce ramurile. Compactitatea are prioritate, deci
+# forma iese rotundă, nu în raze.
 _SQRT3 = 3 ** 0.5
 
 
 # Ponderi la alegerea celulei, în ordinea strictă a importanței:
 #
-#   1. lipirea de părinte — o lecție care nu atinge lecția din care decurge ar
-#      rupe fagurele, deci costul unui pas în plus depășește orice altceva;
-#   2. apropierea de centru — asta e ce ține forma rotundă și strânsă. Cu o
-#      pondere mică, ramurile o luau drept în afară și ieșeau opt raze subțiri
-#      cu goluri între ele; trebuie să depășească penalizarea maximă de unghi
-#      (180 de grade), altfel direcția câștigă;
-#   3. direcția ramurii — doar departajare, cât să nu se încurce ramurile.
+#   1. lipirea de părinte. O lecție care nu atinge lecția din care decurge ar
+#      rupe fagurele, deci un pas în plus costă mai mult decât orice altceva
+#   2. apropierea de centru. Asta ține forma rotundă. Cu o pondere mică,
+#      ramurile o luau drept în afară și ieșeau opt raze subțiri cu goluri
+#      între ele, deci trebuie să depășească penalizarea maximă de unghi
+#   3. direcția ramurii, doar ca departajare
 _W_PARENT = 10000     # cât costă fiecare pas de depărtare față de părinte
 _W_CENTRE = 300       # cât costă fiecare pas de depărtare față de centru
 _W_ANGLE = 1.0        # cât costă abaterea (în grade) de la direcția ramurii
@@ -75,7 +79,7 @@ def hex_distance(a, b) -> int:
 
 
 def hex_to_pixel(q: int, r: int, size: float = 1.0):
-    """Centrul hexagonului în pixeli (pointy-top), pentru unghiuri și distanțe."""
+    """Centrul hexagonului în pixeli, pointy-top. Pentru unghiuri și distanțe."""
     return size * _SQRT3 * (q + r / 2), size * 1.5 * r
 
 
@@ -91,8 +95,10 @@ def _cells_within(radius: int):
 
 
 def _angle_gap(cell, angle_deg: float) -> float:
-    """Cât de mult se abate direcția centru→celulă de la direcția ramurii, în
-    grade (0..180). Celula centrală n-are direcție, deci nu penalizăm."""
+    """Abaterea direcției centru-celulă față de direcția ramurii, în grade.
+
+    0..180. Celula centrală n-are direcție, deci nu se penalizează.
+    """
     x, y = hex_to_pixel(*cell)
     if x == 0 and y == 0:
         return 0.0
@@ -103,8 +109,9 @@ def _angle_gap(cell, angle_deg: float) -> float:
 def _place(parent, angle_deg: float, taken: set):
     """Cea mai bună celulă liberă pentru o lecție cu părintele dat.
 
-    Preferăm, în ordinea ponderilor de mai sus: lipită de părinte, apoi cât mai
-    aproape de centru, apoi pe direcția ramurii."""
+    În ordinea ponderilor de mai sus: lipită de părinte, apoi cât mai aproape
+    de centru, apoi pe direcția ramurii.
+    """
     best, best_score = None, None
     for cell in _cells_within(_SEARCH_RADIUS):
         if cell in taken:
@@ -126,14 +133,14 @@ def _dump(value):
 def layout_plan() -> dict:
     """{slug: {depth, prereqs, q, r}} pentru toate cele 50 de noduri.
 
-    Plasarea merge pe niveluri de adâncime, nu ramură cu ramură: dacă am umple
-    o ramură până la capăt înainte de a începe următoarea, prima ar ocupa
-    hexagoanele din apropierea centrului și le-ar împinge pe celelalte artificial
-    în afară. Inel cu inel, toate cele opt ramuri cresc în același ritm, ca un
-    foc aprins în mijloc."""
+    Plasarea merge pe niveluri de adâncime, nu ramură cu ramură. Umplută o
+    ramură până la capăt, ea ar ocupa hexagoanele de lângă centru și le-ar
+    împinge pe celelalte în afară. Inel cu inel, toate cele opt ramuri cresc în
+    același ritm.
+    """
     angles = {b["id"]: b["angle"] for b in lessons_seed.BRANCHES}
 
-    # pasul 1 — adâncimea și prerechizitele fiecărei lecții
+    # pasul 1: adâncimea și prerechizitele fiecărei lecții
     plan = {lessons_seed.ROOT["slug"]: {"depth": 0, "prereqs": [], "q": 0, "r": 0}}
     depth_by_branch = {}
     prev_by_branch = {}
@@ -150,7 +157,7 @@ def layout_plan() -> dict:
         }
         by_depth.setdefault(depth, []).append((node["slug"], branch, parent))
 
-    # pasul 2 — poziții: fiecare lecție se lipește de cea din care decurge
+    # pasul 2: pozițiile, fiecare lecție lipită de cea din care decurge
     taken = {(0, 0)}
     for depth in sorted(by_depth):
         for slug, branch, parent in by_depth[depth]:
@@ -163,11 +170,12 @@ def layout_plan() -> dict:
 
 
 def seed_lessons(db: Session) -> int:
-    """Scrie/actualizează cele 50 de lecții din fișierele de seed.
+    """Scrie cele 50 de lecții din fișierele de seed.
 
-    Rulează la fiecare pornire ca să propage schimbările de conținut, dar
-    NU atinge lecțiile marcate `custom` — acelea au fost editate din /admin și
-    editarea manuală trebuie să câștige."""
+    Rulează la fiecare pornire ca să propage schimbările de conținut. Nu atinge
+    lecțiile marcate `custom`: acelea au fost editate din /admin, iar editarea
+    manuală câștigă.
+    """
     written = 0
     plan = layout_plan()
 
@@ -219,7 +227,7 @@ def _load(raw, default):
 
 
 def public_quiz(raw) -> list:
-    """Quiz-ul fără indexul răspunsului corect — forma trimisă spre browser."""
+    """Quiz-ul fără indexul răspunsului corect. Forma trimisă spre browser."""
     return [
         {"q": item.get("q", ""), "options": list(item.get("options", []))}
         for item in _load(raw, [])
@@ -240,7 +248,7 @@ def _future(dt) -> bool:
 
 
 def node_state(lesson, progress, completed_slugs: set, tier: int) -> tuple:
-    """(state, lock_reason). state ∈ locked | available | completed | mastered."""
+    """(state, lock_reason). state e locked, available, completed sau mastered."""
     if progress is not None and progress.mastered:
         return "mastered", None
     if progress is not None and progress.completed:
@@ -258,8 +266,10 @@ def node_state(lesson, progress, completed_slugs: set, tier: int) -> tuple:
 
 
 def _verified_cook_after(db: Session, user_id: int, since) -> bool:
-    """A gătit userul ceva confirmat de AI după momentul dat? Condiția practică
-    pentru mastery."""
+    """A gătit userul ceva confirmat de AI după momentul dat?
+
+    E condiția practică pentru mastery.
+    """
     q = (
         db.query(models.SavedRecipe)
         .filter(
@@ -333,7 +343,7 @@ def build_tree(db: Session, user) -> dict:
 
 
 def lesson_detail(db: Session, user, lesson) -> dict:
-    """Detaliul unei lecții — conținut complet, quiz fără răspunsuri."""
+    """Detaliul unei lecții: conținut complet, quiz fără răspunsuri."""
     lessons = db.query(models.Lesson).all()
     progress = _progress_map(db, user.id)
     tier = ranks.tier_for_xp(user.xp_total)
@@ -378,12 +388,12 @@ def lesson_detail(db: Session, user, lesson) -> dict:
 
 # ---------- scriere ----------
 def award_xp(user, amount: int) -> dict:
-    """Adaugă XP și raportează dacă s-a schimbat treapta de rank."""
+    """Adaugă XP și spune dacă s-a schimbat treapta de rank."""
     before = ranks.tier_for_xp(user.xp_total)
     user.xp_total = max(0, int(user.xp_total or 0)) + int(amount)
     after = ranks.tier_for_xp(user.xp_total)
-    # `level` e păstrat doar ca oglindă pentru consumatorii vechi ai API-ului;
-    # rank-ul e sursa adevărului și se calculează din xp_total.
+    # `level` e doar o oglindă pentru consumatorii vechi ai API-ului. Rank-ul
+    # e sursa adevărului și se calculează din xp_total.
     user.level = after + 1
     return {
         "xp_gained": int(amount),

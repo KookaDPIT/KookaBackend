@@ -1,13 +1,13 @@
-"""Filtrele „inteligente" ale feed-ului de pe Home.
+"""Filtrele inteligente ale feed-ului de pe Home.
 
-Trei dintre chipsuri nu se pot scrie ca WHERE: au nevoie de ingredientele și
-alergenii deserializați din coloanele-JSON, sau de semnalul social al celui
-care se uită. Toate primesc un lot de rețete deja filtrate de vizibilitate și
-îl reordonează/îl taie în Python.
+Trei chipsuri nu se pot scrie ca WHERE: au nevoie de ingredientele și
+alergenii deserializați din coloanele JSON, sau de semnalul social al celui
+care se uită. Fiecare primește un lot de rețete deja filtrate de vizibilitate
+și îl reordonează în Python.
 
-Fiecare funcție întoarce `[(recipe, extra), ...]` — `extra` sunt câmpurile în
-plus pe care le lipim peste dicționarul serializat (potrivirea din frigider,
-motivul recomandării), ca frontend-ul să poată explica de ce e cardul acolo.
+Funcțiile întorc `[(recipe, extra), ...]`. `extra` sunt câmpurile lipite peste
+dicționarul serializat, de pildă potrivirea din frigider sau motivul
+recomandării, ca frontendul să poată explica de ce e cardul acolo.
 """
 import json
 import re
@@ -16,9 +16,8 @@ import models
 from services import allergens as allergen_svc
 from services import ranks
 
-# Cuvinte care apar în aproape orice listă de ingrediente și n-ar trebui să
-# conteze drept „potrivire" — altfel apa și sarea fac orice rețetă să pară
-# gătibilă din ce ai în frigider.
+# Cuvinte care apar în aproape orice listă de ingrediente. Fără ele, apa și
+# sarea ar face orice rețetă să pară gătibilă din ce ai în frigider.
 _STOPWORDS = {
     "water", "salt", "pepper", "oil", "sugar", "to", "taste", "of", "and",
     "for", "the", "a", "some", "fresh", "ground", "chopped", "large", "small",
@@ -67,9 +66,10 @@ def _clashes(recipe, user_keys):
 def allergy_free(pool, viewer):
     """Scoate din listă tot ce conține un alergen declarat.
 
-    Fără alergii declarate filtrul n-are ce filtra — lăsăm lista întreagă, dar
-    marcăm asta, ca interfața să poată propune completarea profilului în loc să
-    arate un rezultat care pare rupt."""
+    Fără alergii declarate nu e nimic de filtrat. Lăsăm lista întreagă, dar
+    marcăm asta, ca interfața să propună completarea profilului în loc să
+    arate un rezultat care pare rupt.
+    """
     keys = _user_allergies(viewer)
     if not keys:
         return [(r, {"feed_reason": "no_allergies_set"}) for r in pool]
@@ -83,7 +83,7 @@ def allergy_free(pool, viewer):
 
 # ---------- cu ce am în frigider ----------
 
-# Sub atât rețeta nu e „gătibilă din ce ai", e doar înrudită.
+# Sub atât rețeta nu e gătibilă din ce ai, e doar înrudită.
 _FRIDGE_MIN_COVER = 0.34
 
 
@@ -115,12 +115,12 @@ def fridge(pool, viewer, pantry_raw: str):
                 "match_percent": round(cover * 100),
                 "have_count": have,
                 "need_count": len(ingredients),
-                # doar câteva: lista completă e pe pagina rețetei
+                # doar câteva. Lista completă e pe pagina rețetei.
                 "missing": missing[:4],
                 "allergen_warning": bool(_clashes(r, allergy_keys)),
             },
         ))
-    # cea mai bună acoperire prima; la egalitate, mai puține ingrediente
+    # cea mai bună acoperire prima, iar la egalitate mai puține ingrediente
     scored.sort(key=lambda x: (-x[1]["match_percent"], x[1]["need_count"]))
     return scored
 
@@ -131,9 +131,9 @@ def recommended(db, pool, viewer):
     """Un scor simplu și explicabil, nu un model.
 
     Contează, în ordinea greutății: autorii pe care îi urmărești, bucătăriile
-    din care ai gătit deja, rank-ul potrivit (ce e blocat coboară, nu dispare —
-    trebuie să ai ce ținti), nota medie și prospețimea. Ce conține un alergen
-    declarat iese complet.
+    din care ai gătit deja, rank-ul potrivit, nota medie și prospețimea. Ce e
+    peste rank-ul tău coboară, nu dispare, ca să ai ce ținti. Ce conține un
+    alergen declarat iese complet.
     """
     if viewer is None:
         return [(r, {"feed_reason": "fresh"}) for r in pool]

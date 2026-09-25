@@ -1,12 +1,13 @@
 """Raportarea conținutului de către utilizatori.
 
-Butonul „Report" exista pe rețete și pe forum și nu trimitea nimic nicăieri.
-Acum scrie un rând într-o coadă pe care moderatorii o văd în consolă, alături
-de cozile de rețete semnalate de AI și de postările ascunse.
+Scrie un rând în coada pe care moderatorii o văd în consolă, lângă cozile de
+rețete semnalate de AI și de postări ascunse.
 
-Un raport per (om, obiect): a apăsa de trei ori nu înseamnă trei semnalări, dar
-nici nu dă eroare — reîncadrăm raportul existent cu motivul nou, ca cineva care
-s-a răzgândit asupra motivului să nu rămână blocat.
+Un raport per (om, obiect). A apăsa de trei ori nu înseamnă trei semnalări,
+dar nici nu dă eroare: reîncadrăm raportul existent cu motivul nou, ca cineva
+care s-a răzgândit să nu rămână blocat.
+
+Vocabularul motivelor e în services/reports.py.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -43,8 +44,10 @@ def _target_exists(db: Session, target_type: str, target_id: int) -> bool:
 
 @router.get("/reports/reasons")
 def report_reasons(target_type: str = ""):
-    """Motivele valabile. Trimise de backend ca lista să fie una singură — ele
-    sunt și cheile după care moderatorii filtrează coada."""
+    """Motivele valabile, trimise de backend ca lista să fie una singură.
+
+    Sunt și cheile după care moderatorii filtrează coada.
+    """
     return {"reasons": reports_service.table(target_type)}
 
 
@@ -76,7 +79,7 @@ def create_report(
         .first()
     )
     if existing is not None:
-        # deja raportat: actualizăm motivul și îl redeschidem dacă fusese închis
+        # Deja raportat. Actualizăm motivul și îl redeschidem dacă era închis.
         existing.reason = reason
         existing.details = details
         if existing.status != "open":
@@ -104,8 +107,11 @@ def my_reports(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    """Ce a raportat deja acest cont — interfața folosește asta ca să arate
-    „Raportat" în loc să lase butonul să pară că n-a făcut nimic."""
+    """Ce a raportat deja acest cont.
+
+    Interfața o folosește ca să arate „Raportat", în loc să lase butonul să
+    pară că n-a făcut nimic.
+    """
     rows = (
         db.query(models.Report.target_type, models.Report.target_id)
         .filter(models.Report.reporter_id == user.id)

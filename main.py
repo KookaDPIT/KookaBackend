@@ -10,12 +10,23 @@ import auth
 import deps
 import models
 
+# Punctul de intrare al aplicației. În ordinea execuției:
+#   1. create_all      creează tabelele lipsă
+#   2. _MIGRATIONS     adaugă coloanele noi pe tabelele existente
+#   3. CORS + routere  vezi mai jos, un router per zonă de produs
+#   4. seed            cele 50 de lecții și clasificarea rețetelor vechi
+#   5. endpointuri     health, OCR, login, înregistrare
+# Restul API-ului stă în routers/.
+
 # creează toate tabelele în DB la pornire
 Base.metadata.create_all(bind=engine)
 
-# Migrări defensive: adaugă coloanele noi pe tabelele deja existente. Postgres
-# suportă IF NOT EXISTS, deci e sigur să rulăm la fiecare pornire (înlocuiește
-# lipsa unui tool de migrare tip Alembic).
+# Migrări, fără Alembic. Fiecare linie se execută la fiecare pornire, deci
+# trebuie să fie idempotentă. Postgres acceptă IF NOT EXISTS; pentru SQLite
+# vezi reîncercarea de mai jos.
+#
+# Adaugi o coloană nouă în models.py? Adaugă aici și ALTER-ul corespunzător,
+# altfel merge local pe o bază proaspătă și crapă pe Render.
 _MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR DEFAULT ''",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url VARCHAR DEFAULT ''",
@@ -29,7 +40,8 @@ _MIGRATIONS = [
     "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS images TEXT DEFAULT ''",
     "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS moderation_status VARCHAR DEFAULT 'ok'",
     "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS ai_notes TEXT DEFAULT ''",
-    # Limba în care a fost scrisă rețeta; conținutul salvat e mereu în engleză.
+    # Limba în care a scris autorul. Vezi serializers.content_language()
+    # pentru ce înseamnă când traducerea n-a reușit.
     "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS source_language VARCHAR DEFAULT 'en'",
     "ALTER TABLE saved_recipes ADD COLUMN IF NOT EXISTS cooked_verified BOOLEAN DEFAULT FALSE",
     "ALTER TABLE saved_recipes ADD COLUMN IF NOT EXISTS cook_photo_url VARCHAR DEFAULT ''",
@@ -40,7 +52,7 @@ _MIGRATIONS = [
     "ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS moderation_status VARCHAR DEFAULT 'ok'",
     "ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS images TEXT DEFAULT ''",
     "ALTER TABLE shopping_items ADD COLUMN IF NOT EXISTS expires_at VARCHAR DEFAULT ''",
-    # ---- Learn: fagurele de lecții + rank-uri ----
+    # ---- Learn: fagurele de lecții și rank-urile ----
     "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS rank VARCHAR DEFAULT 'copper'",
     "ALTER TABLE saved_recipes ADD COLUMN IF NOT EXISTS cooked_at TIMESTAMP",
     "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS slug VARCHAR",
@@ -67,42 +79,44 @@ _MIGRATIONS = [
     "ALTER TABLE lesson_progress ADD COLUMN IF NOT EXISTS mastery_attempts INTEGER DEFAULT 0",
     "ALTER TABLE lesson_progress ADD COLUMN IF NOT EXISTS cooldown_until TIMESTAMP",
     "ALTER TABLE lesson_progress ADD COLUMN IF NOT EXISTS mastery_cooldown_until TIMESTAMP",
-    # Rețetele existente au doar easy/medium/hard — le mapăm o singură dată.
+    # Rețetele vechi au doar easy/medium/hard. Le mapăm o singură dată.
     "UPDATE recipes SET rank = 'copper'   WHERE (rank IS NULL OR rank = '') AND difficulty = 'easy'",
     "UPDATE recipes SET rank = 'silver'   WHERE (rank IS NULL OR rank = '') AND difficulty = 'medium'",
     "UPDATE recipes SET rank = 'platinum' WHERE (rank IS NULL OR rank = '') AND difficulty = 'hard'",
     "UPDATE recipes SET rank = 'copper'   WHERE rank IS NULL OR rank = ''",
     "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS course VARCHAR DEFAULT ''",
-    # ---- textul original al autorului, păstrat lângă traducere ----
+    # ---- textul autorului, păstrat lângă traducere ----
     "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS original_title VARCHAR DEFAULT ''",
     "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS original_description TEXT DEFAULT ''",
     "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS original_ingredients TEXT DEFAULT ''",
     "ALTER TABLE recipes ADD COLUMN IF NOT EXISTS original_steps TEXT DEFAULT ''",
-    # ---- Istoricul gătirilor (cook_logs) ----
-    # Tabela e creată de metadata.create_all; asta o populează O SINGURĂ DATĂ
-    # din ce știam deja, ca streak-urile și trofeele să nu pornească de la zero
-    # pentru conturile existente. `saved_recipes` reține doar ultima gătire per
-    # rețetă, deci recuperăm o linie per pereche, nu istoricul complet — atât se
-    # poate reconstrui onest. XP-ul trecut era 20 fix, indiferent de rank.
+    # ---- istoricul gătirilor ----
+    # Tabela o creează metadata.create_all. Asta o populează o singură dată din
+    # ce știam deja, ca streak-urile și trofeele să nu pornească de la zero pe
+    # conturile existente.
+    #
+    # saved_recipes reține doar ultima gătire per rețetă, deci recuperăm o linie
+    # per pereche, nu istoricul complet. Atât se poate reconstrui onest. XP-ul
+    # de atunci era 20 fix, indiferent de rank.
     """INSERT INTO cook_logs (user_id, recipe_id, rank, xp_awarded, times_cooked, cooked_at)
        SELECT s.user_id, s.recipe_id, COALESCE(r.rank, 'copper'), 20, 1, s.cooked_at
        FROM saved_recipes s JOIN recipes r ON r.id = s.recipe_id
        WHERE s.cooked_verified = TRUE AND s.cooked_at IS NOT NULL
          AND NOT EXISTS (SELECT 1 FROM cook_logs)""",
 ]
-# Rulăm fiecare migrare izolat: o coloană care există deja (sau un dialect care
-# nu suportă IF NOT EXISTS, ex. SQLite local) nu trebuie să blocheze pornirea.
+# Fiecare migrare rulează izolat. O coloană care există deja nu trebuie să
+# blocheze pornirea.
 for stmt in _MIGRATIONS:
     try:
         with engine.begin() as conn:
             conn.execute(text(stmt))
     except Exception:
-        # SQLite (dezvoltarea locală) nu cunoaște `ADD COLUMN IF NOT EXISTS`, iar
-        # fără a doua încercare coloanele noi pur și simplu nu apăreau acolo: pe
-        # Render mergea, local rețetele rămâneau fără `course` și filtrul nou
-        # dădea „no such column". Reîncercăm fără clauză; dacă pică și asta,
-        # coloana chiar există deja (sau enunțul nu era un ADD COLUMN) și tăcem
-        # ca înainte.
+        # SQLite nu cunoaște ADD COLUMN IF NOT EXISTS, deci prima încercare
+        # pică acolo și coloana nu apărea. Pe Render mergea, local rețetele
+        # rămâneau fără `course` și filtrul dădea „no such column".
+        #
+        # Reîncercăm fără clauză. Dacă pică și a doua oară, coloana există deja
+        # sau enunțul nu era un ADD COLUMN, și tăcem.
         retry = stmt.replace(" IF NOT EXISTS", "") if "IF NOT EXISTS" in stmt else ""
         if not retry:
             continue
@@ -125,7 +139,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- Routere pe feature ----------
+# ---------- Routerele, unul per zonă de produs ----------
+# Prefixele sunt declarate în fiecare router, nu aici.
 from routers import (
     recipes, reviews, users, search, daily, uploads, admin, forum, learn, ai,
     bookmarks, cooking,
@@ -147,9 +162,9 @@ app.include_router(ai.router)
 app.include_router(planner.router)
 app.include_router(reports.router)
 
-# Cele 50 de lecții vin din `data/lessons_seed.py` și se rescriu la fiecare
-# pornire, ca modificările de conținut să ajungă în DB fără migrare manuală.
-# Lecțiile editate din /admin sunt marcate `custom` și rămân neatinse.
+# Cele 50 de lecții vin din data/lessons_seed.py și se rescriu la fiecare
+# pornire, ca schimbările de conținut să ajungă în DB fără migrare manuală.
+# Lecțiile editate din /admin poartă `custom` și rămân neatinse.
 try:
     from database import SessionLocal
     from services import learn as learn_service
@@ -159,14 +174,16 @@ try:
         learn_service.seed_lessons(_seed_db)
     finally:
         _seed_db.close()
-except Exception as exc:  # pornirea nu trebuie blocată de seed
+except Exception as exc:  # un seed picat nu blochează pornirea
     print(f"[learn] seed sărit: {exc}")
 
 
-# Rețetele de dinaintea coloanei `course` nu au tip, deci n-ar apărea sub niciun
-# filtru de tip — filtrul ar debuta pe un catalog care pare gol. Le clasificăm
-# o dată, euristic (services/courses.guess). Analizorul AI e mai bun și le
-# rescrie la următorul „recalculează"; asta e doar ca pornirea să nu fie goală.
+# Rețetele de dinaintea coloanei `course` n-au tip, deci n-ar apărea sub niciun
+# filtru și filtrul ar debuta pe un catalog aparent gol. Le clasificăm o dată,
+# euristic, cu services/courses.guess.
+#
+# Analizorul AI e mai bun și le rescrie la următorul „recalculează". Asta e doar
+# ca prima pornire să nu arate gol.
 try:
     from database import SessionLocal
     from services import courses as courses_service
@@ -200,15 +217,18 @@ def health():
 
 
 # ---------- OCR pentru date de expirare ----------
-# Tesseract rulează în container (vezi Dockerfile). Dacă binarul lipsește —
-# rulare locală fără Docker — endpointul întoarce 503, restul aplicației merge.
+# Logica stă în ocr.py. Binarul Tesseract vine din Dockerfile. Fără Docker,
+# local, endpointul întoarce 503 și restul aplicației merge mai departe.
 
-MAX_OCR_UPLOAD = 8 * 1024 * 1024  # 8 MB; peste asta consumăm RAM degeaba
+MAX_OCR_UPLOAD = 8 * 1024 * 1024  # 8 MB, peste atât consumăm RAM degeaba
 
 
 @app.get("/ocr/health")
 def ocr_health():
-    """Verifică dacă binarul Tesseract e disponibil în container."""
+    """Spune dacă binarul Tesseract există aici.
+
+    Frontend-ul o cere înainte să ofere butonul de scanare.
+    """
     try:
         import pytesseract
 
@@ -235,8 +255,8 @@ async def ocr_expiry(
             detail="Imaginea depășește 8 MB",
         )
 
-    # Import întârziat: fără el, lipsa lui pytesseract/Pillow ar bloca pornirea
-    # întregii aplicații, nu doar acest endpoint.
+    # Import întârziat. Altfel lipsa lui pytesseract sau Pillow ar bloca
+    # pornirea întregii aplicații, nu doar endpointul ăsta.
     try:
         from ocr import read_expiry
     except ImportError as exc:
@@ -254,7 +274,8 @@ async def ocr_expiry(
         )
 
 
-# ---------- Scheme pentru datele primite (request) ----------
+# ---------- Autentificare: scheme și endpointuri ----------
+# Stau aici, nu într-un router, fiindcă nu au prefix comun cu restul.
 
 class LoginRequest(BaseModel):
     email: str
@@ -264,12 +285,12 @@ class ForgotPasswordRequest(BaseModel):
     email: str
 
 
-# ---------- Endpoint de login ----------
+# ---------- login ----------
 
 @app.post("/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
-    # emailurile se stochează lowercase la înregistrare — căutăm la fel, ca un
-    # login scris cu majuscule să nu pice degeaba
+    # Emailurile se stochează lowercase la înregistrare. Căutăm la fel, ca un
+    # login scris cu majuscule să nu pice degeaba.
     user = db.query(models.User).filter(
         func.lower(models.User.email) == data.email.strip().lower()
     ).first()
@@ -290,7 +311,7 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     return {"access_token": token, "token_type": "bearer"}
 
 
-# ---------- Endpoint de "am uitat parola" ----------
+# ---------- am uitat parola ----------
 
 @app.post("/forgot-password")
 def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
@@ -303,10 +324,10 @@ def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
 
     return {"exists": True, "message": "Emailul este corect, contul există"}
 
-# ---------- Disponibilitate username / email ----------
+# ---------- disponibilitate username și email ----------
 
 def _username_taken(db: Session, username: str, except_id: int = None) -> bool:
-    """Comparație case-insensitive: `Alex` și `alex` sunt același handle."""
+    """Comparație case-insensitive. `Alex` și `alex` sunt același handle."""
     if not username:
         return False
     q = db.query(models.User).filter(
@@ -335,10 +356,14 @@ def check_availability(
     db: Session = Depends(get_db),
     viewer: models.User = Depends(deps.get_current_user_optional),
 ):
-    """Verificare live pentru formularul de înregistrare ȘI pentru ecranul de
-    setări. Dacă apelantul e autentificat, propriul cont e exclus din verificare
-    — altfel ți-ai vedea propriul username raportat drept „ocupat" de îndată ce
-    deschizi setările. Întoarce doar booleeni, niciodată cui aparține contul."""
+    """Verificare live pentru înregistrare și pentru ecranul de setări.
+
+    Pe un apelant autentificat, propriul cont iese din verificare. Altfel
+    ți-ai vedea username-ul raportat drept „ocupat" de îndată ce deschizi
+    setările.
+
+    Întoarce doar booleeni, niciodată cui aparține contul.
+    """
     except_id = viewer.id if viewer is not None else None
     result = {}
     if username.strip():
@@ -348,7 +373,7 @@ def check_availability(
     return result
 
 
-# ---------- Schema pentru datele de înregistrare ----------
+# ---------- înregistrare ----------
 
 class RegisterRequest(BaseModel):
     full_name: str = ""
@@ -358,7 +383,7 @@ class RegisterRequest(BaseModel):
     password_confirm: str
 
 
-# ---------- Endpoint de înregistrare ----------
+# endpointul propriu-zis
 
 @app.post("/register")
 def register(data: RegisterRequest, db: Session = Depends(get_db)):

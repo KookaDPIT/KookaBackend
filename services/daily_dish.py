@@ -1,8 +1,10 @@
-"""Algoritmul Daily Global Dish.
+"""Alegerea felului zilei.
 
-Calcul lazy pe zi (fără scheduler): la prima cerere din ziua curentă alegem o
-rețetă bine cotată/populară, evitând rețetele și țările featured recent, și
-salvăm alegerea în tabelul daily_dishes pentru idempotență."""
+Calcul leneș, fără scheduler: la prima cerere din zi alegem o rețetă bine
+cotată, evităm rețetele și țările apărute recent, și salvăm alegerea în
+daily_dishes. Rândul salvat face cererile următoare idempotente, deci felul
+zilei nu se schimbă la fiecare refresh.
+"""
 from datetime import datetime, timedelta
 
 from sqlalchemy import func
@@ -20,8 +22,11 @@ def _today() -> str:
 
 
 def _is_eligible(db: Session, recipe) -> bool:
-    """Publicată și cu autor nesuspendat. O rețetă ascunsă de moderator sau al
-    cărei autor a fost suspendat nu mai are ce căuta pe prima pagină."""
+    """Publicată și cu autor nesuspendat.
+
+    O rețetă ascunsă de moderator, sau al cărei autor a fost suspendat, nu mai
+    are ce căuta pe prima pagină.
+    """
     if recipe is None or recipe.moderation_status != "ok":
         return False
     if recipe.author_id is None:
@@ -30,7 +35,7 @@ def _is_eligible(db: Session, recipe) -> bool:
 
 
 def _score_query(db: Session):
-    """Rețete 'ok' ordonate după rating mediu, apoi nr. recenzii, apoi salvări."""
+    """Rețetele „ok", după rating mediu, apoi număr de recenzii, apoi salvări."""
     avg_rating = func.coalesce(func.avg(models.Review.rating), 0).label("avg_rating")
     review_count = func.count(func.distinct(models.Review.id)).label("review_count")
     save_count = func.count(func.distinct(models.SavedRecipe.id)).label("save_count")
@@ -53,8 +58,7 @@ def _score_query(db: Session):
 
 
 def get_or_pick_daily(db: Session):
-    """Întoarce Recipe pentru ziua curentă (o creează dacă nu există). None dacă
-    nu există nicio rețetă în DB."""
+    """Rețeta zilei curente, creată dacă nu există. None pe o bază goală."""
     today = _today()
 
     existing = (
@@ -68,15 +72,15 @@ def get_or_pick_daily(db: Session):
         )
         if _is_eligible(db, recipe):
             return recipe
-        # Ștearsă, ascunsă de moderator sau autor suspendat între timp. Alegem
-        # alta, dar păstrăm rândul de azi: felul zilei se schimbă o singură dată
-        # și rămâne stabil până la miezul nopții, nu la fiecare cerere.
+        # Ștearsă, ascunsă sau cu autorul suspendat între timp. Alegem alta,
+        # dar păstrăm rândul de azi: felul zilei se schimbă o singură dată și
+        # rămâne stabil până la miezul nopții.
         if recipe is not None:
             recipe.is_daily_dish = False
         db.delete(existing)
         db.commit()
 
-    # rețete featured recent (de evitat)
+    # rețete apărute recent, de evitat
     recent_cutoff = (datetime.utcnow() - timedelta(days=RECENT_RECIPE_DAYS)).strftime("%Y-%m-%d")
     recent_recipe_ids = {
         d.recipe_id
@@ -84,7 +88,7 @@ def get_or_pick_daily(db: Session):
         .filter(models.DailyDish.date >= recent_cutoff)
         .all()
     }
-    # țări featured în ultimele zile (de evitat dacă se poate)
+    # țări apărute în ultimele zile, de evitat dacă se poate
     origin_cutoff = (datetime.utcnow() - timedelta(days=RECENT_ORIGIN_DAYS)).strftime("%Y-%m-%d")
     recent_origin_dish_ids = [
         d.recipe_id
@@ -110,22 +114,22 @@ def get_or_pick_daily(db: Session):
     def pick(candidates):
         return candidates[0] if candidates else None
 
-    # 1) nu recent + țară diferită
+    # 1) nu recentă și dintr-o altă țară
     chosen = pick([
         row for row in ranked
         if row.id not in recent_recipe_ids
         and (row.origin or "").lower() not in recent_origins
     ])
-    # 2) doar nu recent (relaxăm țara)
+    # 2) doar nu recentă, renunțăm la condiția de țară
     if chosen is None:
         chosen = pick([row for row in ranked if row.id not in recent_recipe_ids])
-    # 3) orice (DB mică)
+    # 3) orice, pentru o bază mică
     if chosen is None:
         chosen = ranked[0]
 
     recipe = db.query(models.Recipe).filter(models.Recipe.id == chosen.id).first()
 
-    # marcăm ziua + flag pe rețetă
+    # marcăm ziua și punem flag-ul pe rețetă
     db.query(models.Recipe).filter(models.Recipe.is_daily_dish == True).update(
         {models.Recipe.is_daily_dish: False}
     )

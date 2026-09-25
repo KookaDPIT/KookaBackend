@@ -1,10 +1,12 @@
 """Planificatorul: lista de cumpărături și calendarul de mese.
 
-Logica stă aici, nu în router, pentru că are DOI apelanți: paginile (prin
-`routers/planner.py`) și asistentul din chat, care poate adăuga ingrediente
-sau poate plănui o săptămână în urma unei conversații. Ambele trebuie să
-producă exact aceleași rânduri, altfel „adaugă-mi astea pe listă" ar crea
-intrări pe care pagina nu le știe interpreta.
+Logica stă aici, nu în router, fiindcă are doi apelanți: paginile, prin
+routers/planner.py, și asistentul din chat, care poate adăuga ingrediente sau
+plănui o săptămână. Amândoi trebuie să producă exact aceleași rânduri, altfel
+„adaugă-mi astea pe listă" ar crea intrări pe care pagina nu le înțelege.
+
+Ordinea din fișier: normalizarea datelor și a ingredientelor, lista de
+cumpărături, calendarul, apoi apply_ai_plan() și rezumatul trimis modelului.
 """
 import json
 import re
@@ -15,14 +17,14 @@ import models
 SLOTS = ("breakfast", "lunch", "dinner", "snack")
 DEFAULT_SLOT = "dinner"
 
-# Cât de departe acceptăm o planificare. Ține greșelile de tastare („2206")
-# în afara calendarului fără să limiteze planificarea rezonabilă.
+# Cât de departe acceptăm o planificare. Ține greșelile de tastare în afara
+# calendarului, fără să limiteze planificarea rezonabilă.
 MAX_DAYS_AHEAD = 400
 MAX_DAYS_BEHIND = 120
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-# „200 g flour" / „2 onions" / „500ml milk" -> (cantitate, unitate, nume)
+# „200 g flour", „2 onions", „500ml milk" -> (cantitate, unitate, nume)
 _AMOUNT_RE = re.compile(
     r"^\s*(?P<qty>\d+(?:[.,]\d+)?(?:\s*/\s*\d+)?)\s*"
     r"(?P<unit>kg|g|mg|l|ml|cl|dl|tbsp|tsp|cups?|cloves?|slices?|cans?|pcs?|buc)?\b\s*"
@@ -37,11 +39,11 @@ def normalize_slot(value: str) -> str:
 
 
 def normalize_date(value: str) -> str:
-    """Acceptă YYYY-MM-DD; orice altceva cade pe ziua de azi.
+    """Acceptă YYYY-MM-DD. Orice altceva cade pe ziua de azi.
 
     Datele vin și de la model, care poate scrie „next Tuesday" sau o dată din
-    2019. O dată invalidă nu trebuie să arunce planificarea la gunoi, dar nici
-    să ajungă în DB — așa că se normalizează la azi și se prinde în fereastră.
+    2019. O dată invalidă nu trebuie să arunce planificarea, dar nici să ajungă
+    în DB, deci se normalizează la azi și se prinde în fereastra de mai sus.
     """
     today = date.today()
     text = (value or "").strip()
@@ -61,9 +63,9 @@ def normalize_date(value: str) -> str:
 def split_amount(line: str):
     """Desparte o linie de ingredient în (nume, cantitate, unitate).
 
-    Rețetele își scriu ingredientele ca text („200 g flour"), dar lista de
-    cumpărături vrea cantitatea separat ca să poată fi editată. Ce nu se
-    potrivește tiparului rămâne întreg ca nume — mai bine „a handful of basil"
+    Rețetele își scriu ingredientele ca text, „200 g flour", dar lista de
+    cumpărături vrea cantitatea separat ca să fie editabilă. Ce nu se
+    potrivește tiparului rămâne întreg ca nume. Mai bine „a handful of basil"
     fără cantitate decât o cantitate inventată.
     """
     raw = (line or "").strip()
@@ -106,9 +108,9 @@ def add_shopping(db, user, name: str, quantity="", unit="", source="manual",
                  recipe_id=None):
     """Adaugă sau adună.
 
-    Aceeași cerere de două ori nu trebuie să dea două rânduri identice pe
-    listă. Cantitățile se adună doar când ambele sunt numere cu aceeași
-    unitate; altfel păstrăm rândul existent și nu inventăm o sumă.
+    Aceeași cerere de două ori nu trebuie să dea două rânduri identice.
+    Cantitățile se adună doar când ambele sunt numere cu aceeași unitate.
+    Altfel păstrăm rândul existent și nu inventăm o sumă.
     """
     clean = (name or "").strip()
     if not clean:
@@ -188,7 +190,7 @@ def meal_to_dict(db, entry: models.MealPlanEntry) -> dict:
             .filter(models.Recipe.id == entry.recipe_id)
             .first()
         )
-        # o rețetă ștearsă între timp lasă titlul, nu un card mort
+        # O rețetă ștearsă între timp lasă titlul, nu un card mort.
         if recipe is not None and recipe.moderation_status == "ok":
             data["recipe"] = {
                 "id": recipe.id,
@@ -219,7 +221,7 @@ def add_meal(db, user, day: str, title: str = "", recipe_id=None,
     if not clean_title:
         return None
 
-    # aceeași rețetă, în aceeași zi și același moment al zilei, o singură dată
+    # aceeași rețetă, în aceeași zi și același moment, o singură dată
     duplicate = (
         db.query(models.MealPlanEntry)
         .filter(
@@ -255,7 +257,7 @@ def add_meal(db, user, day: str, title: str = "", recipe_id=None,
 
 
 def week_bounds(anchor: str = ""):
-    """Luni→duminică pentru săptămâna care conține `anchor` (implicit azi)."""
+    """Luni până duminică, pentru săptămâna care conține `anchor`."""
     try:
         day = date.fromisoformat(anchor) if anchor else date.today()
     except ValueError:
@@ -267,9 +269,9 @@ def week_bounds(anchor: str = ""):
 def apply_ai_plan(db, user, plan: dict) -> dict:
     """Aplică ce a cerut asistentul și raportează ce a ieșit.
 
-    Modelul propune; aici se decide. Tot ce intră trece prin aceleași funcții
-    ca butoanele din interfață, așa că nu poate crea rânduri pe care pagina nu
-    le înțelege — și rețete inexistente cad pe simplu titlu.
+    Modelul propune, aici se decide. Tot ce intră trece prin aceleași funcții
+    ca butoanele din interfață, deci nu poate crea rânduri pe care pagina nu le
+    înțelege. O rețetă inexistentă cade pe simplu titlu.
     """
     result = {"shopping": [], "meals": []}
     if not isinstance(plan, dict):
@@ -313,7 +315,7 @@ def apply_ai_plan(db, user, plan: dict) -> dict:
 def summarize_for_model(db, user) -> list:
     """Ce are omul deja pe listă și în calendar, ca asistentul să nu repete.
 
-    Câteva linii, nu tot: fiecare se plătește în tokeni la fiecare mesaj.
+    Câteva linii, nu tot. Fiecare se plătește în tokeni la fiecare mesaj.
     """
     lines = []
     items = (

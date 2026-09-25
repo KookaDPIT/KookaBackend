@@ -7,11 +7,11 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Render dă uneori URL cu "postgres://", SQLAlchemy vrea "postgresql://"
+# Render dă uneori URL cu "postgres://". SQLAlchemy cere "postgresql://".
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# SQLite (folosit doar local/pentru teste) are nevoie de check_same_thread=False
+# SQLite rulează doar local și în teste. Are nevoie de check_same_thread=False
 # ca să meargă cu firele de execuție ale FastAPI.
 _connect_args = {}
 if DATABASE_URL and DATABASE_URL.startswith("sqlite"):

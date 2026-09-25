@@ -1,11 +1,11 @@
-"""Sesiunile de gătit — cum a decurs o gătire, nu doar dacă s-a terminat.
+"""Sesiunile de gătit: cum a decurs o gătire, nu doar dacă s-a terminat.
 
 Pagina de cook-along raportează aici. Tot ce se strânge alimentează trofeele
-(services/trophies.py): durată, cereri de ajutor, cronometre sărite, ieșiri din
-aplicație, abandonuri.
+din services/trophies.py: durată, cereri de ajutor, cronometre sărite, ieșiri
+din aplicație, abandonuri.
 
-Toate scrierile sunt tolerante: un eveniment pierdut înseamnă un trofeu ratat,
-nu o gătire stricată, deci nimic de aici nu poate bloca bucătarul.
+Toate scrierile sunt tolerante. Un eveniment pierdut înseamnă un trofeu ratat,
+nu o gătire stricată, deci nimic de aici nu blochează bucătarul.
 """
 from datetime import datetime
 
@@ -27,7 +27,7 @@ class SessionStart(BaseModel):
 
 
 class SessionEvent(BaseModel):
-    """Un lot de incremente. Frontend-ul trimite doar ce s-a schimbat.
+    """Un lot de incremente. Frontendul trimite doar ce s-a schimbat.
 
     Incremente, nu valori absolute: două file deschise pe aceeași rețetă ar
     scrie una peste alta dacă ar trimite totaluri.
@@ -61,9 +61,9 @@ def start_session(
 ):
     """Deschide o sesiune. Una nouă la fiecare intrare în cook-along.
 
-    Nu reutilizăm o sesiune deschisă pentru aceeași rețetă: a începe din nou
-    după ce ai lăsat baltă e o a doua încercare, iar „te-ai întors și ai
-    terminat" e tocmai ce măsoară „Comeback Kid".
+    Nu reutilizăm o sesiune deschisă pe aceeași rețetă. A începe din nou după
+    ce ai lăsat baltă e o a doua încercare, iar „te-ai întors și ai terminat" e
+    exact ce măsoară „Comeback Kid".
     """
     recipe = db.query(models.Recipe).filter(models.Recipe.id == data.recipe_id).first()
     if not recipe:
@@ -96,8 +96,8 @@ def update_session(
             row.first_ask_after = max(
                 0, int((datetime.utcnow() - row.started_at).total_seconds())
             )
-    # `ai_steps` numără pași distincți, iar frontend-ul știe care sunt deja
-    # marcați — trimite indexul doar prima dată pentru fiecare pas.
+    # `ai_steps` numără pași distincți. Frontendul știe care sunt deja marcați
+    # și trimite indexul doar prima dată pentru fiecare pas.
     if data.ai_step is not None:
         row.ai_steps = (row.ai_steps or 0) + 1
     if data.timer_started:

@@ -1,5 +1,18 @@
-"""Moderare: rețete flagged, ștergere/ascundere rețetă, și uneltele de roluri
-(listare utilizatori, schimbare rol, suspendare, activare/dezactivare)."""
+"""Consola de moderare și administrare.
+
+Secțiuni, în ordinea din fișier:
+
+  rețete        coada de semnalate, ascundere, ștergere completă
+  forum         aceleași unelte, pe postări și comentarii
+  roluri        listare conturi, schimbare rol, suspendare, dezactivare
+  lecții        editarea conținutului Learn din interfață
+  dashboard     totaluri, ultimele 7 zile, cozi deschise, conturi active
+  reanaliză AI  recalcularea nutriției pe rețete vechi sau incomplete
+  raportări     coada venită de la utilizatori
+
+Listarea și suspendarea sunt pentru moderatori. Schimbarea rolului cere admin,
+prin require_role("admin"), ca un moderator să nu se poată auto-promova.
+"""
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -33,9 +46,12 @@ def list_for_moderation(
 
 
 def purge_recipe(db: Session, recipe: models.Recipe):
-    """Șterge rețeta ȘI tot ce trimite la ea. Fără asta rămân recenzii și
-    salvări orfane, iar rețeta continuă să apară în activitatea și în pașaportul
-    conturilor care o gătiseră — o fantomă pe care nimeni n-o mai poate deschide."""
+    """Șterge rețeta și tot ce trimite la ea.
+
+    Fără asta rămân recenzii și salvări orfane, iar rețeta apare în continuare
+    în activitatea și în pașaportul conturilor care o gătiseră, ca o intrare pe
+    care nimeni n-o mai poate deschide.
+    """
     db.query(models.Review).filter(models.Review.recipe_id == recipe.id).delete()
     db.query(models.SavedRecipe).filter(models.SavedRecipe.recipe_id == recipe.id).delete()
     db.query(models.DailyDish).filter(models.DailyDish.recipe_id == recipe.id).delete()
@@ -86,7 +102,7 @@ def restore_recipe(
 
 
 # ==========================================================================
-#  MODERAREA FORUMULUI — aceleași unelte ca la rețete
+#  MODERAREA FORUMULUI: aceleași unelte ca la rețete
 # ==========================================================================
 
 @router.get("/forum/posts")
@@ -198,15 +214,15 @@ def activate_user(
 
 
 # ==========================================================================
-#  UNELTELE DE ROLURI
-#  Listarea și suspendarea sunt pentru moderatori; schimbarea rolului doar
-#  pentru admini (require_role("admin")), ca un moderator să nu se poată
-#  auto-promova.
+#  ROLURI ȘI SANCȚIUNI
 # ==========================================================================
 
 def _admin_user_dict(u: models.User):
-    """Vedere de moderare a unui cont: include câmpurile pe care serializatorul
-    public le ascunde (email, rol, stare, suspendare)."""
+    """Vedere de moderare a unui cont.
+
+    Include câmpurile pe care serializatorul public le ascunde: email, rol,
+    stare, suspendare.
+    """
     suspended = bool(u.suspended_until and u.suspended_until > datetime.utcnow())
     return {
         "id": u.id,
@@ -279,8 +295,11 @@ def suspend_user(
     db: Session = Depends(get_db),
     admin: models.User = Depends(get_current_admin),
 ):
-    """Suspendare temporară: contul rămâne activ (poate citi), dar rutele care
-    folosesc deps.require_not_suspended îi refuză scrierea până la termen."""
+    """Suspendare temporară.
+
+    Contul rămâne activ și poate citi. Rutele care folosesc
+    deps.require_not_suspended îi refuză scrierea până la termen.
+    """
     u = db.query(models.User).filter(models.User.id == user_id).first()
     if not u:
         raise HTTPException(404, "Utilizatorul nu există")
@@ -310,9 +329,9 @@ def unsuspend_user(
     return _admin_user_dict(u)
 
 
-# ---------- LECȚII (Learn) ----------
-# Editarea unei lecții o marchează `custom`, așa că seed-ul de la pornire n-o
-# mai rescrie. `POST /admin/lessons/{slug}/reset` renunță la editare și readuce
+# ---------- LECȚII ----------
+# Editarea unei lecții o marchează `custom`, deci seed-ul de la pornire n-o mai
+# rescrie. POST /admin/lessons/{slug}/reset renunță la editare și readuce
 # lecția la conținutul din fișierele de seed.
 
 def _lesson_admin_dict(db: Session, lesson: models.Lesson):
@@ -352,7 +371,7 @@ def _lesson_admin_dict(db: Session, lesson: models.Lesson):
         "steps": learn_service._load(lesson.steps, []),
         "tips": learn_service._load(lesson.tips, []),
         "prereqs": learn_service._load(lesson.prereqs, []),
-        # Aici răspunsurile corecte SUNT incluse: e o consolă de administrare,
+        # Aici răspunsurile corecte sunt incluse. E o consolă de administrare,
         # protejată de require_role("admin"), unde editarea lor e scopul.
         "quiz": learn_service._load(lesson.quiz, []),
         "mastery_quiz": learn_service._load(lesson.mastery_quiz, []),
@@ -437,7 +456,7 @@ def reset_lesson(
     db: Session = Depends(get_db),
     admin: models.User = Depends(require_role("admin")),
 ):
-    """Renunță la editările manuale și re-aplică seed-ul pe această lecție."""
+    """Renunță la editările manuale și re-aplică seed-ul pe lecția asta."""
     from services import learn as learn_service
 
     lesson = db.query(models.Lesson).filter(models.Lesson.slug == slug).first()
@@ -466,8 +485,8 @@ def _count(db: Session, model, *filters) -> int:
 def _daily_series(db: Session, model, days: int = 14) -> list:
     """Câte rânduri pe zi în ultimele `days` zile, inclusiv zilele goale.
 
-    Numărăm în Python peste `created_at`: `date_trunc` e specific Postgres, iar
-    dezvoltarea locală merge pe SQLite — o serie de două săptămâni e destul de
+    Numărăm în Python peste `created_at`. `date_trunc` e specific Postgres, iar
+    dezvoltarea locală merge pe SQLite. O serie de două săptămâni e destul de
     mică încât diferența să nu conteze.
     """
     start = _since(days - 1).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -496,8 +515,8 @@ def moderation_stats(
     """Ce se întâmplă în aplicație, pe o singură pagină.
 
     Consola avea doar cozi de lucru: puteai trata ce era în fața ta, dar nu
-    vedeai dacă e o zi liniștită sau un val. Aici sunt totalurile, ce s-a
-    întâmplat în ultimele 7 zile, cozile deschise și cine e activ.
+    vedeai dacă e o zi liniștită sau un val. Aici sunt totalurile, ultimele 7
+    zile, cozile deschise și cine e activ.
     """
     week = _since(7)
     now = datetime.utcnow()
@@ -525,8 +544,8 @@ def moderation_stats(
         db, models.SavedRecipe, models.SavedRecipe.cooked_verified == True  # noqa: E712
     )
 
-    # Cine a scris ceva în ultima săptămână — proxy pentru „activ", fără un
-    # tabel de sesiuni pe care oricum nu-l avem.
+    # Cine a scris ceva în ultima săptămână. E un substitut pentru „activ",
+    # fără un tabel de sesiuni, pe care oricum nu-l avem.
     active_authors = {
         row[0]
         for row in db.query(models.Recipe.author_id)
@@ -629,9 +648,9 @@ def moderation_stats(
 def _needs_analysis(recipe: models.Recipe) -> bool:
     """A rămas rețeta fără nutriție sau fără alergeni?
 
-    Astea sunt exact câmpurile pe care se bazează filtrul „fără alergenii mei"
-    și avertismentul de pe pagina rețetei, deci „lipsește" înseamnă zero calorii
-    SAU listă de alergeni goală — nu amândouă.
+    Pe câmpurile astea se bazează filtrul „fără alergenii mei" și avertismentul
+    de pe pagina rețetei. „Lipsește" înseamnă zero calorii sau listă de
+    alergeni goală, nu amândouă.
     """
     if not (recipe.calories or 0):
         return True
@@ -648,10 +667,12 @@ def _analyze_one(db: Session, recipe: models.Recipe) -> dict:
     """Rulează analiza pe o rețetă și scrie rezultatul.
 
     Un singur loc pentru regulă, ca butonul de pe o rețetă și cel „pe toate" să
-    nu se poată comporta diferit. Întoarce {"state": ...}:
-      unavailable — analizorul n-a răspuns; NU s-a scris nimic
-      flagged     — modelul zice că nu e o rețetă reală; am marcat-o, n-am șters
-      updated     — nutriția și alergenii au fost rescriși
+    nu se comporte diferit.
+
+    Întoarce {"state": ...}:
+      unavailable  analizorul n-a răspuns, nu s-a scris nimic
+      flagged      modelul zice că nu e o rețetă reală, am marcat-o
+      updated      nutriția și alergenii au fost rescriși
     """
     from services import ai as ai_service
     import json as _json
@@ -663,14 +684,14 @@ def _analyze_one(db: Session, recipe: models.Recipe) -> dict:
         servings=recipe.servings,
     )
 
-    # Analizorul indisponibil (sau limitat de rată) întoarce forma goală:
-    # zerouri, fără alergeni. La publicare e acceptabil — mai bine o rețetă fără
-    # nutriție decât nicio rețetă — dar aici ar șterge date bune peste care nu
-    # mai avem cum reveni. Refuzăm în loc să scriem.
+    # Analizorul indisponibil, sau limitat de rată, întoarce forma goală:
+    # zerouri și fără alergeni. La publicare e acceptabil, mai bine o rețetă
+    # fără nutriție decât nicio rețetă. Aici ar șterge date bune peste care nu
+    # mai avem cum reveni, deci refuzăm în loc să scriem.
     if not analysis.get("ok"):
         return {"state": "unavailable"}
 
-    # `valid=False` e o opinie despre conținut, nu despre nutriție: o semnalăm
+    # `valid=False` e o opinie despre conținut, nu despre nutriție. O semnalăm
     # în coadă, dar nu ștergem ce aveam pe baza ei.
     if not analysis["valid"]:
         recipe.moderation_status = "flagged"
@@ -701,7 +722,7 @@ def reanalyze_recipe(
     Analiza rulează o singură dată, la publicare. Rețetele mai vechi decât
     câmpurile de nutriție, cele importate, și cele salvate în minutele în care
     Groq era indisponibil au rămas cu zerouri sau fără alergeni. De aici un
-    moderator le poate umple fără să ceară autorului să reediteze rețeta.
+    moderator le umple fără să ceară autorului să reediteze.
     """
     recipe = db.query(models.Recipe).filter(models.Recipe.id == recipe_id).first()
     if not recipe:
@@ -726,9 +747,9 @@ def reanalyze_recipe(
 
 
 # Cât procesăm într-un singur request. Ținut mic din două motive: un request
-# HTTP care rulează minute întregi cade pe orice proxy, iar nivelul gratuit Groq
-# dă 8000 de tokeni pe minut per model — un lot mare ar lua 429 la jumătate.
-# Frontend-ul apelează în buclă până când `remaining` ajunge 0.
+# HTTP care rulează minute întregi cade pe orice proxy, iar nivelul gratuit
+# Groq dă 8000 de tokeni pe minut per model, deci un lot mare ar lua 429 la
+# jumătate. Frontendul apelează în buclă până când `remaining` ajunge 0.
 ANALYZE_BATCH = 5
 ANALYZE_BATCH_MAX = 15
 
@@ -743,30 +764,25 @@ def reanalyze_all(
 ):
     """Un lot din „reanalizează tot".
 
-    „missing" (implicit) atinge doar rețetele care chiar au nevoie — e ce vrei
-    după ce analizorul a fost căzut o vreme, și nu cheltuie tokeni pe rețete
-    care au deja date bune. „all" le reface pe toate.
+    „missing", implicit, atinge doar rețetele care chiar au nevoie. E ce vrei
+    după ce analizorul a fost căzut o vreme, și nu cheltuie tokeni pe rețete cu
+    date bune. „all" le reface pe toate.
 
-    `after_id` e cursorul, folosit în ambele scopuri: fără el bucla ar relua la
-    infinit primele `limit` rețete — la „all" pentru că nimic nu le scoate din
-    listă, la „missing" pentru că o rețetă semnalată sau una care rămâne pe 0
-    calorii după analiză e în continuare candidată. Apelantul trimite înapoi
-    `last_id` primit.
+    `after_id` e cursorul. Apelantul trimite înapoi `last_id` primit.
 
     Se oprește la prima rețetă pentru care analizorul nu răspunde și raportează
-    asta: la acel punct nimic din ce urmează n-ar reuși oricum, iar rețetele
+    asta. În acel punct nimic din ce urmează n-ar reuși oricum, iar rețetele
     deja procesate rămân salvate.
     """
     all_scope = scope == "all"
     query = db.query(models.Recipe).order_by(models.Recipe.id.asc())
-    # Cursorul se aplică în ambele scopuri, nu doar la „all".
+    # Cursorul se aplică în ambele moduri, nu doar la „all".
     #
-    # Fără el, „missing" relua la fiecare lot exact aceleași rețete din capul
-    # listei: o rețetă marcată `flagged` (sau una pentru care modelul întoarce
-    # onest 0 calorii) rămâne „fără date", deci rămâne candidată la infinit.
-    # Bucla din frontend le re-analiza pe alea până la plafonul de 400 de runde
-    # și nu ajungea niciodată la rețetele de mai jos — de aici rețete cu 0
-    # calorii pe care butonul „nu le lua".
+    # Fără el, „missing" relua la fiecare lot aceleași rețete din capul listei.
+    # O rețetă marcată `flagged`, sau una pentru care modelul întoarce onest 0
+    # calorii, rămâne fără date, deci rămâne candidată la infinit. Bucla din
+    # frontend le reanaliza pe alea până la plafonul de 400 de runde și nu
+    # ajungea niciodată la rețetele de mai jos.
     if after_id:
         query = query.filter(models.Recipe.id > after_id)
     candidates = query.all()
@@ -788,11 +804,10 @@ def reanalyze_all(
             flagged += 1
         else:
             updated += 1
-        # Avansăm cursorul chiar și pentru rețetele semnalate: au fost atinse,
-        # deci lotul următor trebuie să treacă mai departe.
+        # Avansăm cursorul și pentru rețetele semnalate: au fost atinse,
         last_id = recipe.id
-        # commit rețetă cu rețetă: dacă analizorul cade la a treia, primele două
-        # rămân scrise în loc să se piardă tot lotul
+        # Commit rețetă cu rețetă. Dacă analizorul cade la a treia, primele
+        # două rămân scrise în loc să se piardă tot lotul.
         db.commit()
 
     processed = updated + flagged
@@ -804,7 +819,7 @@ def reanalyze_all(
         # câte mai sunt de făcut după lotul ăsta
         "remaining": max(0, total - processed),
         "total": total,
-        # cursorul pentru lotul următor (contează doar pentru „all")
+        # cursorul pentru lotul următor
         "last_id": last_id,
         "stopped": stopped,
     }
@@ -891,8 +906,8 @@ def list_reports(
             "status": report.status,
             "created_at": iso_utc(report.created_at),
             "reporter": serializers.author_mini(reporter),
-            # `None` înseamnă că obiectul a fost șters între timp — raportul
-            # rămâne în coadă ca să poată fi închis, dar spune ce s-a întâmplat
+            # None înseamnă că obiectul a fost șters între timp. Raportul
+            # rămâne în coadă ca să poată fi închis, dar spune ce s-a întâmplat.
             "target": target,
         })
     return out
@@ -905,7 +920,7 @@ def act_on_report(
     db: Session = Depends(get_db),
     admin: models.User = Depends(get_current_admin),
 ):
-    """„resolve" = am luat măsuri, „dismiss" = raportul nu ținea."""
+    """„resolve" înseamnă am luat măsuri. „dismiss" înseamnă raportul nu ținea."""
     report = db.query(models.Report).filter(models.Report.id == report_id).first()
     if not report:
         raise HTTPException(404, "Raportul nu există")

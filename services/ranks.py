@@ -1,16 +1,19 @@
-"""Sistemul de rank-uri (Copper I → Chef).
+"""Rank-urile, de la Copper I la Chef.
 
-Rank-ul înlocuiește vechiul `level`: e o funcție pură de `User.xp_total`, deci
-nu se poate desincroniza de progres — nu-l stocăm nicăieri, îl calculăm.
+Rank-ul a înlocuit vechiul `level`. E o funcție pură de `User.xp_total`, deci
+nu se stochează și nu se poate desincroniza de progres.
 
-Sunt 16 trepte („tiers"): 5 rank-uri cu câte 3 divizii + Chef, care e unul
-singur. `tier` = indexul 0..15; `rank` = familia (copper/bronze/.../chef).
+Sunt 16 trepte: 5 rank-uri cu câte 3 divizii, plus Chef, care e singur. `tier`
+e indexul 0..15, `rank` e familia: copper, bronze, silver, gold, platinum, chef.
 
-Rețetele folosesc doar cele 6 familii, fără divizii — vezi `RECIPE_RANKS`.
+Rețetele folosesc doar cele 6 familii, fără divizii. Vezi `RECIPE_RANKS`.
+
+Ordinea din fișier: familiile, pragurile de XP, funcțiile de citire, rank-ul
+rețetelor, XP-ul pentru o gătire.
 """
 
 # ---------- familiile de rank ----------
-# `faded`/`vibrant`: culorile pătrățelelor de progres din bara de rank.
+# `faded` și `vibrant` sunt culorile pătrățelelor din bara de progres.
 RANKS = [
     {"id": "copper",   "name": "Copper",   "divisions": 3, "faded": "#d9a8a0", "vibrant": "#d74d34"},
     {"id": "bronze",   "name": "Bronze",   "divisions": 3, "faded": "#d4b5a0", "vibrant": "#b8753d"},
@@ -25,14 +28,14 @@ RANK_BY_ID = {r["id"]: r for r in RANKS}
 
 # XP cumulat necesar pentru fiecare din cele 16 trepte.
 #
-# Pragurile NU sunt alese estetic: fiecare e calibrat sub XP-ul total pe care
-# lecțiile de sub el îl pot oferi (vezi `_tools/check_progression.py`). Altfel
-# arborele se auto-blochează — o primă calibrare „rotundă" oprea utilizatorul
-# după două lecții, fără nimic disponibil și fără cale de deblocare.
+# Pragurile nu sunt alese estetic. Fiecare e calibrat sub XP-ul total pe care
+# lecțiile de sub el îl pot da, vezi _tools/check_progression.py. Altfel
+# arborele se auto-blochează: o primă calibrare cu cifre rotunde oprea
+# utilizatorul după două lecții, fără nimic disponibil.
 #
-# Regula de proiectare: lecțiile singure trebuie să ducă până la Platinum III,
-# iar mastery-ul și provocările zilnice sunt accelerare, nu obligații. Chef e
-# singura treaptă care le cere explicit — de aici saltul de la final.
+# Regula de proiectare: lecțiile singure duc până la Platinum III, iar
+# mastery-ul și provocările zilnice sunt accelerare, nu obligații. Chef e
+# singura treaptă care le cere explicit, de aici saltul de la final.
 TIER_XP = [
     0,      # Copper I
     180,    # Copper II
@@ -95,8 +98,11 @@ def rank_id_for_tier(tier: int) -> str:
 
 
 def first_tier_of_rank(rank_id: str) -> int:
-    """Treapta la care începe o familie de rank — pragul folosit de rețete,
-    care au rank fără divizii (o rețetă „Silver" cere Silver I)."""
+    """Treapta la care începe o familie de rank.
+
+    E pragul folosit de rețete, care au rank fără divizii. O rețetă „Silver"
+    cere Silver I.
+    """
     tier = 0
     for rank in RANKS:
         if rank["id"] == rank_id:
@@ -127,14 +133,14 @@ def progress_for_xp(xp: int) -> dict:
         "next_tier_xp": next_xp,
         "xp_into_tier": into,
         "xp_to_next": None if is_max else max(0, next_xp - xp),
-        # 100% când ești la Chef: bara e plină, nu goală
+        # 100% la Chef. Bara e plină, nu goală.
         "percent": 100 if is_max else (round(into / span * 100) if span else 0),
         "is_max": is_max,
     }
 
 
 def table() -> list:
-    """Tabelul complet al treptelor — trimis frontend-ului o singură dată."""
+    """Tabelul complet al treptelor, trimis frontendului o singură dată."""
     out = []
     for tier, threshold in enumerate(TIER_XP):
         rank_index, division = _tier_parts(tier)
@@ -155,7 +161,7 @@ def table() -> list:
 # ---------- rank-ul rețetelor (fără divizii) ----------
 RECIPE_RANKS = RANK_IDS  # copper..chef
 
-# Rețetele vechi au doar easy/medium/hard; le mapăm o singură dată, la migrare.
+# Rețetele vechi au doar easy/medium/hard. Le mapăm o singură dată, la migrare.
 DIFFICULTY_TO_RANK = {
     "easy": "copper",
     "medium": "silver",
@@ -171,21 +177,24 @@ def normalize_recipe_rank(value: str, difficulty: str = "") -> str:
 
 
 def can_access_recipe(user_xp: int, recipe_rank: str) -> bool:
-    """Rețetele peste rank-ul tău sunt blocate (decizie de produs, asumată)."""
+    """Ai voie să deschizi o rețetă de rank-ul ăsta?
+
+    Apelanții o folosesc ca avertisment, nu ca blocare. Vezi
+    routers/recipes.get_recipe.
+    """
     return tier_for_xp(user_xp) >= first_tier_of_rank(recipe_rank)
 
 
 # ---------- XP pentru o rețetă gătită ----------
 #
-# Era 20 XP fix, indiferent ce găteai: o rețetă Chef de trei ore valora exact
-# cât o omletă Copper. Acum scala urmează rank-ul rețetei.
+# Era 20 XP fix, indiferent ce găteai: o rețetă Chef de trei ore valora cât o
+# omletă Copper. Acum scala urmează rank-ul rețetei.
 #
 # Calibrare: pragurile din TIER_XP presupun că lecțiile singure duc până la
 # Platinum III, iar gătitul e accelerare. Valorile de mai jos stau deliberat
-# sub XP-ul unei provocări zilnice de același rank (services/challenges.py:
-# 60..320) — provocarea e un bonus peste gătit, nu un înlocuitor. La 25 XP
-# rețeta, Copper I → Copper II (180 XP) cere ~7 feluri, ceea ce e un ritm de
-# învățare, nu de grind.
+# sub XP-ul unei provocări zilnice de același rank, vezi services/challenges.py.
+# Provocarea e un bonus peste gătit, nu un înlocuitor. La 25 XP pe rețetă,
+# Copper I spre Copper II cere vreo 7 feluri.
 COOK_XP_BY_RANK = {
     "copper": 25,
     "bronze": 40,
@@ -195,21 +204,20 @@ COOK_XP_BY_RANK = {
     "chef": 150,
 }
 
-# Cât din XP rămâne când gătești A DOUA oară (și mai departe) aceeași rețetă.
+# Cât din XP rămâne la a doua gătire a aceleiași rețete, și mai departe.
 #
-# Reluările sunt încurajate în altă parte (trofeele „Two's Company" și
-# „Hat-Trick Pony" le cer explicit), deci nu le putem da zero. Dar XP-ul plin la
-# fiecare reluare ar face din cea mai scurtă rețetă Chef un buton de farmat:
-# tot ce-ar mai conta ar fi de câte ori apeși. Un sfert păstrează reluarea
-# răsplătită fără să fie strategia optimă.
+# Reluările sunt cerute explicit de trofeele „Two's Company" și „Hat-Trick
+# Pony", deci nu pot da zero. Dar XP plin la fiecare reluare ar face din cea
+# mai scurtă rețetă Chef un buton de farmat, unde contează doar de câte ori
+# apeși. Un sfert păstrează reluarea răsplătită fără să fie strategia optimă.
 REPEAT_COOK_XP_RATIO = 0.25
 
 
 def cook_xp(recipe_rank: str, times_cooked: int = 1) -> int:
-    """XP-ul pentru o gătire confirmată. `times_cooked` e a câta oară (1 = prima).
+    """XP-ul pentru o gătire confirmată. `times_cooked` e a câta oară, 1 = prima.
 
-    Minimul de 1 XP există ca o reluare să nu se rotunjească vreodată la zero —
-    „ai gătit ceva și n-ai primit nimic" citește ca un bug, nu ca o regulă.
+    Minimul de 1 XP există ca o reluare să nu se rotunjească la zero. „Ai gătit
+    ceva și n-ai primit nimic" se citește ca un bug, nu ca o regulă.
     """
     base = COOK_XP_BY_RANK.get(normalize_recipe_rank(recipe_rank), COOK_XP_BY_RANK["copper"])
     if times_cooked and times_cooked > 1:

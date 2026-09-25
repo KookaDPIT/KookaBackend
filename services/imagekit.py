@@ -1,8 +1,9 @@
 """Upload de imagini pe ImageKit.
 
-Backendul face upload-ul (nu frontendul), ca să nu expună cheia privată.
-Folosim direct API-ul de upload ImageKit cu Basic auth (private key ca
-username), ca să fim independenți de versiunea SDK-ului."""
+Urcarea o face backendul, nu frontendul, ca să nu expună cheia privată.
+Folosim direct API-ul de upload cu Basic auth, cu cheia privată pe post de
+username, ca să nu depindem de versiunea SDK-ului.
+"""
 import os
 
 import requests

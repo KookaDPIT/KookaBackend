@@ -1,8 +1,12 @@
-"""Scheme Pydantic pentru request/response.
+"""Scheme Pydantic: forma datelor care INTRĂ prin API.
 
-Notă: câmpurile stocate ca JSON în DB (ingredients, steps, nutrition,
-allergens, images) sunt serializate/deserializate în routere, așa că aici
-răspunsurile complexe folosesc tipuri Python native (list/dict)."""
+Ce iese înapoi se construiește în serializers.py, nu aici. Câmpurile ținute
+ca text JSON în DB (ingredients, steps, nutrition, allergens, images) se
+serializează în routere, deci aici apar ca list/dict.
+
+Secțiuni, în ordinea din fișier: rețete, recenzii, utilizatori și profil,
+moderare și roluri, forum, Learn, planificator, raportări, AI.
+"""
 from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel, Field
 
@@ -10,22 +14,22 @@ from pydantic import BaseModel, Field
 # ---------- RECIPES ----------
 class StepIn(BaseModel):
     text: str
-    timer: Optional[str] = None   # ex. "8:30"
+    timer: Optional[str] = None   # „8:30", sau None când pasul nu are cronometru
     label: Optional[str] = None
 
 
 class RecipeCreate(BaseModel):
     title: str
     description: str = ""
-    origin: str = ""                       # țara de origine
+    origin: str = ""                       # ISO 3166-1 alpha-3
     servings: int = 1
     duration_min: int = 0
     difficulty: str = "easy"
-    rank: str = ""                         # copper..chef; gol -> derivat din difficulty
-    course: str = ""                       # dessert/appetizer/main/…; gol -> ghicit
+    rank: str = ""                         # copper..chef, gol = derivat din difficulty
+    course: str = ""                       # vezi services/courses.py, gol = ghicit
     ingredients: List[str] = Field(default_factory=list)
     steps: List[StepIn] = Field(default_factory=list)
-    image_url: str = ""                    # cover (deja urcat pe ImageKit)
+    image_url: str = ""                    # coperta, deja urcată pe ImageKit
     images: List[str] = Field(default_factory=list)
 
 
@@ -69,14 +73,14 @@ class ProfileUpdate(BaseModel):
     bio: Optional[str] = None
     avatar_url: Optional[str] = None
     cover_url: Optional[str] = None
-    # listă bifată în interfață sau șirul istoric separat prin virgulă —
-    # normalizarea la o singură formă se face în router
+    # Listă bifată în interfață, sau șirul istoric separat prin virgulă.
+    # Router-ul le normalizează la o singură formă.
     allergies: Optional[Union[str, List[str]]] = None
     preferences: Optional[str] = None
     theme: Optional[str] = None
     language: Optional[str] = None
     units: Optional[str] = None
-    settings: Optional[str] = None   # JSON serializat cu preferințele de client
+    settings: Optional[str] = None   # JSON cu preferințele de client
 
 
 class PasswordChange(BaseModel):
@@ -86,12 +90,12 @@ class PasswordChange(BaseModel):
 
 # ---------- MODERARE / ROLURI ----------
 class RoleUpdate(BaseModel):
-    role: str   # user / moderator / admin
+    role: str   # user | moderator | admin
 
 
 class SuspendRequest(BaseModel):
-    """Durata se dă în ore, ca să fie posibile și sancțiunile scurte (o zi,
-    câteva ore). `days` rămâne pentru compatibilitate cu apelurile vechi."""
+    """Suspendare. Durata se dă în ore, ca să fie posibile și sancțiunile
+    scurte. `days` rămâne pentru apelurile vechi."""
     days: int = Field(default=7, ge=1, le=3650)
     hours: Optional[int] = Field(default=None, ge=1, le=87600)
 
@@ -100,8 +104,8 @@ class SuspendRequest(BaseModel):
 class ForumPostCreate(BaseModel):
     title: str
     body: str = ""
-    language: str = "en"     # subforumul
-    tag: str = "question"    # subiectul
+    language: str = "en"     # subforumul, ISO 639-1
+    tag: str = "question"    # subiectul, vocabular fix în routers/forum.py
     images: List[str] = Field(default_factory=list)
 
 
@@ -133,8 +137,10 @@ class ModerationAction(BaseModel):
 
 # ---------- LEARN ----------
 class QuizSubmit(BaseModel):
-    """Indexul opțiunii alese pentru fiecare întrebare, în ordine. `None`
-    înseamnă „fără răspuns" și se punctează ca greșit."""
+    """Indexul opțiunii alese la fiecare întrebare, în ordine.
+
+    None înseamnă „fără răspuns" și se punctează ca greșit.
+    """
     answers: List[Optional[int]] = Field(default_factory=list)
 
 
@@ -145,8 +151,11 @@ class QuizQuestion(BaseModel):
 
 
 class LessonAdminUpdate(BaseModel):
-    """Editarea unei lecții din consola de administrare. Orice câmp trimis
-    marchează lecția drept `custom`, ca seed-ul de la pornire să n-o rescrie."""
+    """Editarea unei lecții din /admin.
+
+    Orice câmp trimis marchează lecția drept `custom`, ca seed-ul de la pornire
+    să n-o rescrie.
+    """
     title: Optional[str] = None
     summary: Optional[str] = None
     intro: Optional[str] = None
@@ -164,11 +173,11 @@ class LessonAdminUpdate(BaseModel):
 # ---------- PLANIFICATOR ----------
 class ShoppingItemIn(BaseModel):
     name: str
-    # text liber: „2", „500"; oamenii scriu și „o legătură", iar a forța un
-    # număr ar pierde informația
+    # Text liber. Oamenii scriu „2", „500" și „o legătură". Forțat la număr,
+    # ultima s-ar pierde.
     quantity: str = ""
     unit: str = ""
-    expires_at: str = ""   # „YYYY-MM-DD", de regulă scanat de pe ambalaj
+    expires_at: str = ""   # „YYYY-MM-DD", de obicei scanat de pe ambalaj
 
 
 class ShoppingItemUpdate(BaseModel):
@@ -180,7 +189,7 @@ class ShoppingItemUpdate(BaseModel):
 
 
 class MealPlanIn(BaseModel):
-    date: str                      # YYYY-MM-DD
+    date: str                      # YYYY-MM-DD, ora locală a celui care plănuiește
     title: str = ""
     recipe_id: Optional[int] = None
     slot: str = "dinner"           # breakfast | lunch | dinner | snack
@@ -206,7 +215,7 @@ class ReportAction(BaseModel):
 
 # ---------- AI ----------
 class ChatTurn(BaseModel):
-    """Un schimb din panoul de chat: `role` e "user" sau "ai"."""
+    """Un schimb din panoul de chat. `role` e "user" sau "ai"."""
     role: str = "user"
     text: str = ""
 
@@ -221,9 +230,10 @@ class CookAsk(BaseModel):
 class ChatAsk(BaseModel):
     """Un mesaj către Kooka în chatul liber.
 
-    Fără `conversation_id` se deschide un fir nou. `image` e un data-URI
-    (`data:image/jpeg;base64,...`) — poza ajunge la model o singură dată și nu
-    se salvează nicăieri."""
+    Fără `conversation_id` se deschide un fir nou. `image` e un data-URI de
+    forma `data:image/jpeg;base64,...`. Poza ajunge la model o singură dată și
+    nu se salvează nicăieri.
+    """
     message: str = ""
     conversation_id: Optional[int] = None
     image: str = ""

@@ -1,19 +1,22 @@
 # -*- coding: utf-8 -*-
-"""Tipul felului de mâncare — „ce e asta", nu „din ce e făcută".
+"""Tipul felului de mâncare: „ce e asta", nu „din ce e făcută".
 
 Căutarea avea doar titlu și țară, deci „vreau un desert" nu era o întrebare pe
-care o puteai pune. Asta e vocabularul fix care o face posibilă, și tot el dă
-tag-ul de mic dejun de care au nevoie trofeele.
+care o puteai pune. Aici e vocabularul fix care o face posibilă, și tot el dă
+tag-ul de mic dejun cerut de trofee.
 
-Vocabularul e **închis** intenționat. Tag-uri libere ar însemna „dessert",
-„desert", „Desserts" și „sweet" ca patru categorii diferite, iar un filtru cu
-patru butoane pentru același lucru nu e un filtru. Cine scrie o rețetă alege
-dintr-o listă; analizorul AI alege tot din ea; rețetele vechi sunt clasificate
-o dată, euristic, de funcția de mai jos.
+Vocabularul e închis, intenționat. Tag-uri libere ar însemna „dessert",
+„desert", „Desserts" și „sweet" ca patru categorii, iar un filtru cu patru
+butoane pentru același lucru nu e un filtru. Autorul alege dintr-o listă,
+analizorul AI alege din aceeași listă, iar rețetele vechi sunt clasificate o
+dată, euristic, de guess() mai jos.
 
-`meals` spune la ce mese se potrivește fiecare tip. Nu e o a doua coloană în
-DB — se deduce din curs — pentru că a întreba autorul și „ce fel e" și „la ce
-masă se mănâncă" ar fi două întrebări pentru aceeași informație.
+`meals` spune la ce mese se potrivește fiecare tip. Se deduce din curs, nu e a
+doua coloană în DB: altfel l-am întreba pe autor și „ce fel e", și „la ce masă
+se mănâncă", adică aceeași informație de două ori.
+
+Ordinea din fișier: vocabularul, normalize(), clasificarea euristică, și
+filtrul comun folosit de /recipes și /search.
 """
 import re
 
@@ -42,8 +45,8 @@ DEFAULT_COURSE = "main"
 def normalize(value: str) -> str:
     """Un curs valid, altfel șirul gol.
 
-    Gol ≠ „main": o rețetă neclasificată trebuie să poată fi găsită de sweep-ul
-    de backfill, iar dacă o forțăm pe „main" la citire n-o mai găsește nimeni.
+    Gol nu înseamnă „main". O rețetă neclasificată trebuie să rămână găsibilă
+    de sweep-ul de backfill, iar forțată pe „main" la citire n-o mai găsește.
     """
     value = (value or "").strip().lower()
     return value if value in COURSE_BY_ID else ""
@@ -54,7 +57,7 @@ def meals_for(course: str) -> list:
 
 
 def courses_for_meal(meal: str) -> list:
-    """Ce tipuri de fel se potrivesc la o masă — invers față de `meals_for`."""
+    """Ce tipuri de fel se potrivesc la o masă. Inversul lui `meals_for`."""
     meal = (meal or "").strip().lower()
     return [c["id"] for c in COURSES if meal in c["meals"]]
 
@@ -62,12 +65,11 @@ def courses_for_meal(meal: str) -> list:
 # ---------- clasificarea euristică a rețetelor vechi ----------
 #
 # Rulează o singură dată, la migrare, ca sute de rețete existente să nu apară
-# drept „neclasificate" în ziua în care apare filtrul. Analizorul AI e mai bun
-# și le rescrie la următorul sweep — asta e doar ca filtrul să nu pornească gol.
+# drept neclasificate în ziua în care apare filtrul. Analizorul AI e mai bun și
+# le rescrie la următorul sweep.
 #
-# Conținutul din DB e în engleză (routers/recipes traduce la publicare), dar
-# rețetele de dinaintea traducerii au rămas în original, deci lista include și
-# cuvinte românești.
+# Conținutul din DB e în engleză, dar rețetele de dinaintea traducerii au rămas
+# în original, deci lista include și cuvinte românești.
 _KEYWORDS = [
     ("soup", ["soup", "broth", "chowder", "bisque", "ciorba", "ciorbă", "supa", "supă", "bors", "borș"]),
     ("dessert", [
@@ -102,18 +104,18 @@ _KEYWORDS = [
 
 
 def guess(title: str, ingredients=None, description: str = "") -> str:
-    """Ghicește cursul dintr-un titlu (plus descriere/ingrediente ca sprijin).
+    """Ghicește cursul din titlu, cu descrierea și ingredientele ca sprijin.
 
-    Ordinea din `_KEYWORDS` contează: „soup" înainte de „salad" pentru că
-    „ciorbă de salată verde" e o ciorbă. Nimic potrivit → felul principal, care
-    e categoria cea mai largă și cea mai puțin greșită ca implicit.
+    Ordinea din `_KEYWORDS` contează: „soup" înainte de „salad", fiindcă
+    „ciorbă de salată verde" e o ciorbă. Fără potrivire cade pe felul
+    principal, categoria cea mai largă și cel mai puțin greșit implicit.
     """
     haystack = " ".join([
         (title or ""),
         (description or ""),
         " ".join(str(i) for i in (ingredients or [])),
     ]).lower()
-    # Titlul cântărește mai mult: „chocolate cake" cu făină în ingrediente e
+    # Titlul cântărește mai mult. „Chocolate cake" cu făină în ingrediente e
     # tot desert, nu produs de panificație.
     title_only = (title or "").lower()
 
@@ -127,7 +129,7 @@ def guess(title: str, ingredients=None, description: str = "") -> str:
 
 
 def table() -> list:
-    """Vocabularul complet, trimis frontend-ului o singură dată."""
+    """Vocabularul complet, trimis frontendului o singură dată."""
     return [dict(c) for c in COURSES]
 
 
@@ -137,25 +139,24 @@ def apply_facets(query, recipe_model, course: str, meal: str,
                  kcal_min: int = 0, kcal_max: int = 0):
     """Filtrele „ce fel de mâncare" și „câte calorii".
 
-    Stă aici, nu în routerul de rețete, pentru că îl folosesc și /recipes, și
-    /search — iar un router care importă alt router ca să ajungă la o funcție
-    cu underscore e o dependență pe care nimeni n-o caută.
+    Stă aici, nu în routerul de rețete, fiindcă îl folosesc și /recipes, și
+    /search. Un router care importă alt router ca să ajungă la o funcție cu
+    underscore e o dependență pe care n-o caută nimeni.
 
-    `course` acceptă mai multe valori separate prin virgulă (sunt bife, nu un
-    radio: „desert sau gustare" e o întrebare rezonabilă). `meal` e traducerea
-    lui în tipuri de fel — „ce pot mânca la micul dejun" înseamnă ceva pentru
-    utilizator și nimic pentru DB.
+    `course` acceptă mai multe valori separate prin virgulă. Sunt bife, nu un
+    radio: „desert sau gustare" e o întrebare rezonabilă. `meal` e traducerea
+    lor în tipuri de fel.
 
-    Plafonul de calorii ignoră rețetele cu 0 kcal: zero nu e „foarte ușoară", e
-    „încă neanalizată", iar un filtru „sub 400 kcal" plin de rețete fără date ar
-    fi mai rău decât unul mai scurt. Pragul minim le exclude oricum.
+    Plafonul de calorii ignoră rețetele cu 0 kcal. Zero nu înseamnă „foarte
+    ușoară", înseamnă „încă neanalizată", iar un filtru „sub 400 kcal" plin de
+    rețete fără date ar fi mai rău decât unul mai scurt.
     """
     wanted = [c for c in (normalize(x) for x in (course or "").split(",")) if c]
     if meal:
         from_meal = courses_for_meal(meal)
         wanted = [c for c in wanted if c in from_meal] if wanted else from_meal
         if not wanted:
-            # masă necunoscută: mai bine niciun rezultat decât toate
+            # masă necunoscută. Mai bine niciun rezultat decât toate.
             wanted = ["__none__"]
     if wanted:
         query = query.filter(recipe_model.course.in_(wanted))

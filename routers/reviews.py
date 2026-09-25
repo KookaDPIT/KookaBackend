@@ -1,7 +1,11 @@
-"""Recenzii + verificarea AI că ai gătit rețeta.
+"""Recenzii, și verificarea AI că ai gătit rețeta.
 
-Regula: poți lăsa recenzie doar după ce ai marcat rețeta ca gătită ȘI AI-ul a
-confirmat poza (cooked_verified). Îți poți edita/șterge propria recenzie."""
+Regula: lași recenzie doar după ce rețeta e marcată gătită și AI-ul a
+confirmat poza. Îți poți edita și șterge propria recenzie.
+
+Verificarea pozei e punctul în care se întâmplă multe deodată: XP, istoric de
+gătire, provocarea zilei, mastery pe lecții. Vezi verify_cook() mai jos.
+"""
 import base64
 from datetime import datetime
 
@@ -37,10 +41,11 @@ async def verify_cook(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    """Verifică poza de gătit cu AI-ul FĂRĂ a o stoca nicăieri.
+    """Verifică poza de gătit cu AI-ul, fără s-o stocheze nicăieri.
 
-    Imaginea e trimisă lui Groq ca data-URI base64 (efemer, în memorie) și apoi
-    aruncată — nu ajunge pe ImageKit, iar `cook_photo_url` rămâne gol."""
+    Imaginea ajunge la Groq ca data-URI base64, efemer, în memorie, și se
+    aruncă după. Nu urcă pe ImageKit, iar `cook_photo_url` rămâne gol.
+    """
     recipe = db.query(models.Recipe).filter(models.Recipe.id == recipe_id).first()
     if not recipe:
         raise HTTPException(404, "Rețeta nu există")
@@ -70,8 +75,9 @@ async def verify_cook(
         "can_review": bool(result["verified"]),
     }
 
-    # Închiderea sesiunii de cook-along. O poză respinsă nu o termină — poți
-    # încerca alta — dar se numără: „AI-ul ți-a comentat farfuria" e un trofeu.
+    # Închiderea sesiunii de cook-along. O poză respinsă nu termină sesiunea,
+    # poți încerca alta, dar se numără: „AI-ul ți-a comentat farfuria" e un
+    # trofeu.
     session = None
     if session_id:
         session = (
@@ -85,8 +91,8 @@ async def verify_cook(
     if session is not None:
         if result["verified"]:
             session.finished_at = datetime.utcnow()
-            # Ai terminat-o: un abandon de mai devreme din ACEEAȘI sesiune nu
-            # mai e un abandon, e o pauză.
+            # Ai terminat-o. Un abandon de mai devreme din aceeași sesiune nu
+            # mai e abandon, e o pauză.
             session.gave_up_at = None
         else:
             session.verify_failures = (session.verify_failures or 0) + 1
@@ -94,9 +100,9 @@ async def verify_cook(
     if result["verified"]:
         saved.cooked_at = datetime.utcnow()
 
-        # XP-ul urmează rank-ul rețetei, nu o valoare fixă: 25 pentru Copper,
-        # 150 pentru Chef (services/ranks.COOK_XP_BY_RANK). Reluările primesc un
-        # sfert — vezi comentariul de acolo pentru de ce nu zero și nu tot.
+        # XP-ul urmează rank-ul rețetei, nu o valoare fixă: 25 la Copper, 150
+        # la Chef, vezi services/ranks.COOK_XP_BY_RANK. Reluările primesc un
+        # sfert, iar motivul e explicat acolo.
         recipe_rank = ranks.normalize_recipe_rank(recipe.rank, recipe.difficulty)
         times_cooked = 1 + (
             db.query(models.CookLog)
@@ -109,8 +115,8 @@ async def verify_cook(
         cook_xp = ranks.cook_xp(recipe_rank, times_cooked)
         gained = cook_xp
 
-        # Istoricul e separat de SavedRecipe, care păstrează doar ultima gătire:
-        # streak-urile și trofeele au nevoie de fiecare dată în parte.
+        # Istoricul e separat de SavedRecipe, care păstrează doar ultima
+        # gătire. Streak-urile și trofeele au nevoie de fiecare dată în parte.
         db.add(models.CookLog(
             user_id=user.id,
             recipe_id=recipe_id,
@@ -123,14 +129,14 @@ async def verify_cook(
         response["cook_rank"] = recipe_rank
         response["times_cooked"] = times_cooked
 
-        # O gătire confirmată poate încheia o provocare a zilei…
+        # O gătire confirmată poate încheia o provocare a zilei.
         challenge = challenges.complete_for_recipe(db, user, recipe_id)
         if challenge is not None:
             gained += challenge.xp
             response["challenge_completed"] = {"id": challenge.id, "xp": challenge.xp}
 
-        # …și poate acorda mastery pe lecțiile unde quiz-ul avansat e deja
-        # trecut și lipsea doar dovada practică.
+        # Și poate acorda mastery pe lecțiile unde quiz-ul avansat e trecut și
+        # lipsea doar dovada practică.
         pending = (
             db.query(models.LessonProgress)
             .filter(
@@ -170,10 +176,12 @@ def recent_reviews(
     db: Session = Depends(get_db),
     viewer: models.User = Depends(get_current_user_optional),
 ):
-    """Cele mai recente recenzii din toată aplicația, cu info despre rețetă
-    (pentru secțiunea „Fresh reviews" de pe Home)."""
-    # Blocarea trebuie să taie și recenziile, nu doar rețetele și postările:
-    # altfel blochezi pe cineva și îl citești în continuare pe prima pagină.
+    """Cele mai recente recenzii din aplicație, cu datele rețetei.
+
+    Pentru secțiunea „Fresh reviews" de pe Home.
+    """
+    # Blocarea taie și recenziile, nu doar rețetele și postările. Altfel
+    # blochezi pe cineva și îl citești în continuare pe prima pagină.
     hidden = visibility.hidden_author_ids(db, viewer)
     query = db.query(models.Review)
     if hidden:

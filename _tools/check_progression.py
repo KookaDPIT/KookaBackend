@@ -2,22 +2,24 @@
 """Verifică faptul că arborele Learn poate fi terminat.
 
 Rulează o simulare lacomă: un utilizator care termină tot ce-i devine
-disponibil, folosind DOAR XP-ul din lecții — fără mastery, fără provocări
-zilnice. Dacă simularea se blochează, pragurile din `services.ranks.TIER_XP`
-cer mai mult XP decât pot produce lecțiile de sub ele, iar utilizatorul rămâne
-împotmolit fără nicio cale de deblocare.
+disponibil, folosind doar XP-ul din lecții, fără mastery și fără provocări
+zilnice.
 
-Rulare (din rădăcina backendului):
+Dacă simularea se blochează, pragurile din services.ranks.TIER_XP cer mai mult
+XP decât pot produce lecțiile de sub ele, iar utilizatorul rămâne împotmolit
+fără cale de deblocare.
+
+Rulare, din rădăcina backendului:
 
     python -m _tools.check_progression
 
-Ieșire 0 = arborele e parcurgibil. Rulează asta după orice schimbare de
-`TIER_XP`, de `req_tier` sau de formula de XP.
+Ieșire 0 înseamnă arbore parcurgibil. Rulează după orice schimbare de TIER_XP,
+de `req_tier` sau de formula de XP.
 """
 import sys
 
-# Consola Windows implicită e cp1252 și nu poate scrie diacritice; fără asta
-# scriptul crapă la primul `print`, nu la o problemă reală de progresie.
+# Consola Windows implicită e cp1252 și nu poate scrie diacritice. Fără linia
+# asta scriptul crapă la primul print, nu la o problemă reală de progresie.
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

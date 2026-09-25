@@ -1,4 +1,8 @@
-"""Căutare globală: rețete (nume/țară) + utilizatori (username/nume)."""
+"""Căutare globală: rețete după nume și țară, utilizatori după nume.
+
+Filtrele de mâncare, adică tipul felului și plafonul de calorii, vin din
+services/courses.py, aceleași pe care le folosește și /recipes.
+"""
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -14,11 +18,11 @@ router = APIRouter(tags=["search"])
 
 @router.get("/courses")
 def course_vocabulary():
-    """Vocabularul închis al tipurilor de fel + mesele la care se potrivesc.
+    """Vocabularul tipurilor de fel și mesele la care se potrivesc.
 
-    Cerut o singură dată de frontend, ca butoanele de filtru să vină din aceeași
-    listă pe care o folosesc analizorul și validarea — nu dintr-o copie care
-    apucă să se desincronizeze.
+    Cerut o dată de frontend, ca butoanele de filtru să vină din aceeași listă
+    pe care o folosesc analizorul și validarea, nu dintr-o copie care apucă să
+    se desincronizeze.
     """
     return {"courses": courses.table(), "meals": courses.MEALS}
 
@@ -35,8 +39,8 @@ def search(
 ):
     q = q.strip()
     faceted = bool(course or meal or kcal_min or kcal_max)
-    # „Nimic de căutat" înseamnă acum text gol ȘI fără filtre: „arată-mi toate
-    # deserturile sub 400 kcal" e o căutare validă fără niciun cuvânt în ea.
+    # „Nimic de căutat" înseamnă text gol și fără filtre. „Toate deserturile
+    # sub 400 kcal" e o căutare validă fără niciun cuvânt în ea.
     if not q and not faceted:
         return {"recipes": [], "users": []}
 
@@ -62,8 +66,8 @@ def search(
         .all()
     )
 
-    # Oamenii se caută doar după nume. Filtrele de mai sus sunt despre mâncare,
-    # deci o căutare care are doar filtre nu are cum să returneze utilizatori.
+    # Oamenii se caută doar după nume. Filtrele de mai sus sunt despre
+    # mâncare, deci o căutare doar cu filtre nu întoarce utilizatori.
     if not q:
         return {
             "recipes": [serializers.recipe_to_dict(db, r, viewer=viewer) for r in recipes],
@@ -71,7 +75,7 @@ def search(
         }
 
     like = f"%{q.lower()}%"
-    # un cont suspendat/blocat nu trebuie să apară nici în căutare
+    # un cont suspendat sau blocat nu apare nici în căutare
     users_q = db.query(models.User).filter(
         models.User.is_active == True,
         or_(

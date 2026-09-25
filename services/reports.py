@@ -1,8 +1,8 @@
-"""Raportări de conținut: vocabularul motivelor și cum se citește o coadă.
+"""Raportări de conținut: vocabularul motivelor și citirea unei cozi.
 
-Motivele sunt o listă fixă, cu chei stabile, pentru că moderatorii filtrează
-după ele și pentru că textul se traduce în frontend. „other" cere detalii —
-un raport fără motiv și fără explicație nu se poate trata.
+Motivele sunt o listă fixă, cu chei stabile. Moderatorii filtrează după ele,
+iar textul se traduce în frontend. „other" cere detalii, fiindcă un raport
+fără motiv și fără explicație nu se poate trata.
 """
 
 REASONS = [
@@ -25,8 +25,10 @@ def normalize_reason(value: str) -> str:
 
 
 def table(target_type: str = "") -> list:
-    """Motivele valabile pentru un tip de obiect. `targets` restrânge unele —
-    „nu e o rețetă" n-are sens pe o postare de forum."""
+    """Motivele valabile pentru un tip de obiect.
+
+    `targets` le restrânge pe unele. „Nu e o rețetă" n-are sens pe o postare.
+    """
     out = []
     for reason in REASONS:
         targets = reason.get("targets")

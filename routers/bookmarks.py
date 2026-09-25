@@ -1,10 +1,12 @@
-"""Semne de carte — lista de „vreau să gătesc asta cândva".
+"""Semnele de carte: lista de „vreau să gătesc asta cândva".
 
-Calendarul (`MealPlanEntry`) răspunde la „când gătesc asta"; semnul de carte
-răspunde la „poate, cândva", ceea ce e o întrebare diferită și mult mai
-frecventă. Separat și de `SavedRecipe`, care e starea gătitului și se creează
-singură la verificarea AI: a le îmbina ar însemna că scoaterea din listă șterge
-și dovada că ai gătit rețeta.
+Trei liste care par la fel și nu sunt:
+
+  MealPlanEntry   când gătesc asta
+  Bookmark        poate, cândva
+  SavedRecipe     starea gătitului, scrisă de backend la verificarea AI
+
+Unite, scoaterea din listă ar șterge și dovada că ai gătit rețeta.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -36,12 +38,12 @@ def list_bookmarks(
 ):
     """Rețetele marcate, cele mai noi primele.
 
-    `ids` călătorește separat de `recipes`: interfața are nevoie de mulțimea
-    completă ca să știe ce buton e apăsat pe orice card de oriunde din
-    aplicație, iar rețetele ascunse între timp de un moderator (sau ale unui
-    autor blocat) dispar din `recipes` fără să dispară din mulțime — altfel
-    butonul ar arăta „nemarcat" pe o rețetă pe care chiar ai marcat-o și un
-    al doilea clic ar da 409.
+    `ids` călătorește separat de `recipes`. Interfața are nevoie de mulțimea
+    completă ca să știe ce buton e apăsat pe orice card din aplicație.
+
+    O rețetă ascunsă între timp de un moderator dispare din `recipes`, dar
+    rămâne în `ids`. Altfel butonul ar arăta „nemarcat" pe o rețetă chiar
+    marcată, iar al doilea clic ar da 409.
     """
     rows = (
         db.query(models.Bookmark)
@@ -79,8 +81,8 @@ def add_bookmark(
     if not recipe:
         raise HTTPException(404, "Rețeta nu există")
 
-    # Idempotent: a marca de două ori e ce se întâmplă când butonul e apăsat
-    # din două tab-uri, nu o eroare pe care utilizatorul s-o poată repara.
+    # Idempotent. A marca de două ori e ce se întâmplă cu două tab-uri
+    # deschise, nu o eroare pe care utilizatorul s-o poată repara.
     if _row(db, user.id, recipe_id) is None:
         db.add(models.Bookmark(user_id=user.id, recipe_id=recipe_id))
         db.commit()

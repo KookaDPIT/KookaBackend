@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Stocks & Soups (5) și Plating & Pastry (6) — ramurile care închid arborele."""
+"""Stocks & Soups (5) și Plating & Pastry (6). Ramurile care închid arborele."""
 
 LESSONS = [
     # ================= STOCKS & SOUPS =================

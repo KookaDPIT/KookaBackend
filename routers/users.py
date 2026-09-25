@@ -1,4 +1,12 @@
-"""Utilizatori: /me, profil public, urmărire (follow) și pașaport culinar."""
+"""Utilizatori: /me, profilul public, follow, pașaport, streak-uri, trofee.
+
+Două reguli trec prin tot fișierul:
+
+  * un cont suspendat, dezactivat sau blocat dă 404, nu 403, și pe URL direct.
+    Un 403 ar confirma că acel cont există. Vezi services/visibility.py.
+  * un cont privat pe care nu-l urmărești întoarce doar identitatea, prin
+    serializers.user_public_limited().
+"""
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
@@ -28,17 +36,22 @@ def _load_settings(user) -> dict:
 
 
 def _dismissed_activity(user) -> set:
-    """Intrările pe care posesorul le-a scos din propria activitate. Stocate în
-    blobul de preferințe, nu într-un tabel: e o alegere de afișare, nu date —
-    iar ascunderea nu trebuie să șteargă rețeta sau recenzia de dedesubt."""
+    """Intrările pe care posesorul le-a scos din propria activitate.
+
+    Stocate în blobul de preferințe, nu într-un tabel. E o alegere de afișare,
+    nu date, iar ascunderea nu trebuie să șteargă rețeta sau recenzia de
+    dedesubt.
+    """
     raw = _load_settings(user).get("hiddenActivity")
     return set(raw) if isinstance(raw, list) else set()
 
 
 @router.get("/allergens")
 def allergen_catalog():
-    """Vocabularul de alergeni pe care îl bifezi la înregistrare și în setări.
-    Trimis de backend ca lista să fie una singură pe ambele capete."""
+    """Vocabularul de alergeni, bifat la înregistrare și în setări.
+
+    Vine de la backend ca lista să fie una singură pe ambele capete.
+    """
     return {"allergens": allergen_svc.table()}
 
 
@@ -58,7 +71,7 @@ def update_me(
 ):
     payload = data.model_dump(exclude_none=True)
 
-    # username/email sunt unice — verifică să nu fie deja luate de alt cont
+    # username și email sunt unice. Verificăm să nu fie luate de alt cont.
     new_username = payload.get("username")
     if new_username is not None:
         new_username = new_username.strip().lstrip("@")
@@ -87,9 +100,9 @@ def update_me(
             raise HTTPException(400, "Emailul este deja folosit")
         payload["email"] = new_email
 
-    # Alergiile vin fie ca listă bifată, fie ca șir vechi separat prin virgulă;
-    # coloana stochează întotdeauna cheile canonice, ca filtrarea să nu depindă
-    # de cum a scris cineva „tree nuts".
+    # Alergiile vin fie ca listă bifată, fie ca șir vechi separat prin
+    # virgulă. Coloana stochează mereu cheile canonice, ca filtrarea să nu
+    # depindă de cum a scris cineva „tree nuts".
     if "allergies" in payload:
         raw = payload["allergies"]
         values = raw if isinstance(raw, list) else str(raw).split(",")
@@ -124,10 +137,10 @@ def get_user(
     u = db.query(models.User).filter(models.User.id == user_id).first()
     if not u:
         raise HTTPException(404, "Utilizatorul nu există")
-    # suspendat / dezactivat / blocat → 404 și pe URL direct, nu doar în listări
+    # suspendat, dezactivat sau blocat: 404 și pe URL direct, nu doar în listări
     if not visibility.can_see_user(db, u, viewer):
         raise HTTPException(404, "Utilizatorul nu există")
-    # cont privat pe care nu-l urmărești → doar identitatea (nume + username)
+    # cont privat pe care nu-l urmărești: doar nume și username
     if not serializers.can_view_profile(db, u, viewer):
         return serializers.user_public_limited(db, u, viewer)
     return serializers.user_to_dict(db, u, viewer=viewer)
@@ -162,8 +175,10 @@ def user_activity(
     db: Session = Depends(get_db),
     viewer: models.User = Depends(get_current_user_optional),
 ):
-    """Activitate recentă compusă din: rețete publicate, recenzii scrise și
-    preparate gătite-verificate. Respectă confidențialitatea profilului."""
+    """Activitatea recentă: rețete publicate, recenzii scrise, preparate gătite.
+
+    Respectă confidențialitatea profilului și intrările ascunse de posesor.
+    """
     u = db.query(models.User).filter(models.User.id == user_id).first()
     if not u or not visibility.can_see_user(db, u, viewer):
         raise HTTPException(404, "Utilizatorul nu există")
@@ -237,7 +252,7 @@ def user_activity(
             "when": iso_utc(sv.created_at),
         })
 
-    # cele mai noi primele; punem la coadă cele fără dată
+    # cele mai noi primele, iar cele fără dată la coadă
     items.sort(key=lambda x: x["when"] or "", reverse=True)
     return items[:15]
 
@@ -318,7 +333,7 @@ def passport(
     db: Session = Depends(get_db),
     viewer: models.User = Depends(get_current_user_optional),
 ):
-    """Țări distincte din rețetele autorate + rețetele gătite-verificate."""
+    """Țările distincte din rețetele scrise și din cele gătite și confirmate."""
     u = db.query(models.User).filter(models.User.id == user_id).first()
     if not u or not visibility.can_see_user(db, u, viewer):
         raise HTTPException(404, "Utilizatorul nu există")
@@ -367,7 +382,7 @@ def passport_country(
     db: Session = Depends(get_db),
     viewer: models.User = Depends(get_current_user_optional),
 ):
-    """Ce anume a adus ștampila: rețetele publicate și cele gătite din țara asta."""
+    """Ce a adus ștampila: rețetele publicate și cele gătite din țara asta."""
     u = db.query(models.User).filter(models.User.id == user_id).first()
     if not u or not visibility.can_see_user(db, u, viewer):
         raise HTTPException(404, "Utilizatorul nu există")
@@ -406,7 +421,7 @@ def passport_country(
     )
     for r, cooked_at in cooked:
         if r.id in seen:
-            # publicată ȘI gătită de același om — o singură intrare, cea mai tare
+            # publicată și gătită de același om. O singură intrare, cea mai tare.
             for item in items:
                 if item["id"] == r.id:
                     item["how"] = "both"
@@ -460,8 +475,8 @@ def my_streaks(
 ):
     """Cele patru streak-uri ale userului curent.
 
-    Endpoint separat de /me pentru că se calculează din istoric (trei interogări
-    peste tabele de evenimente), iar /me e cerut la fiecare încărcare de pagină.
+    Endpoint separat de /me fiindcă se calculează din istoric, trei interogări
+    peste tabele de evenimente, iar /me se cere la fiecare încărcare de pagină.
     """
     return streak_svc.for_user(db, user)
 
@@ -472,8 +487,10 @@ def user_streaks(
     db: Session = Depends(get_db),
     viewer: models.User = Depends(get_current_user_optional),
 ):
-    """Aceleași streak-uri, pe profilul public — sub aceleași reguli de
-    confidențialitate ca restul profilului."""
+    """Aceleași streak-uri, pe profilul public.
+
+    Sub aceleași reguli de confidențialitate ca restul profilului.
+    """
     u = db.query(models.User).filter(models.User.id == user_id).first()
     if not u or not visibility.can_see_user(db, u, viewer):
         raise HTTPException(404, "Utilizatorul nu există")
@@ -491,9 +508,9 @@ def my_trophies(
 ):
     """Toate trofeele cu starea lor, plus totalurile pe categorii.
 
-    Cele ascunse pe care nu le ai vin cu numele și descrierea golite — asta e
-    tot rostul lor, iar dacă textul ar circula prin API oricine ar putea citi
-    lista din DevTools.
+    Cele ascunse pe care nu le ai vin cu numele și descrierea golite. Ăsta e
+    tot rostul lor, iar dacă textul ar circula prin API, oricine ar citi lista
+    din DevTools.
     """
     return trophy_svc.evaluate(db, user)
 
@@ -591,9 +608,11 @@ def _leaderboard_row(db: Session, u: models.User, position: int, viewer):
 
 
 def _mutual_follow_ids(db: Session, user_id: int) -> set:
-    """„Prietenii" = follow reciproc. Cine te-a urmărit înapoi, nu oricine
-    urmărești: altfel clasamentul „cu prietenii" ar fi o listă pe care ți-o
-    poți umple singur."""
+    """Prietenii înseamnă follow reciproc.
+
+    Cine te-a urmărit înapoi, nu oricine urmărești tu. Altfel clasamentul „cu
+    prietenii" ar fi o listă pe care ți-o umpli singur.
+    """
     following = {
         row[0]
         for row in db.query(models.Follow.following_id)
@@ -618,11 +637,10 @@ def leaderboard(
     db: Session = Depends(get_db),
     viewer: models.User = Depends(get_current_user),
 ):
-    """Clasamentul după XP — global sau doar între prieteni.
+    """Clasamentul după XP, global sau doar între prieteni.
 
-    Poziția proprie se întoarce întotdeauna, chiar dacă e în afara paginii
-    afișate: întrebarea „pe ce loc sunt?" trebuie să aibă răspuns și de pe
-    locul 900.
+    Poziția proprie se întoarce mereu, chiar dacă e în afara paginii afișate.
+    Întrebarea „pe ce loc sunt?" trebuie să aibă răspuns și de pe locul 900.
     """
     limit = max(1, min(int(limit or 50), 100))
     scope = "friends" if scope == "friends" else "global"
@@ -645,7 +663,7 @@ def leaderboard(
         models.User.xp_total.desc(), models.User.created_at.asc()
     ).all()
 
-    # blocările sunt simetrice: cine te-a blocat (sau invers) nu apare
+    # blocările sunt simetrice: cine te-a blocat, sau invers, nu apare
     hidden = visibility.hidden_author_ids(db, viewer)
     rows = [u for u in rows if u.id not in hidden or u.id == viewer.id]
 

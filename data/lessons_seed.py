@@ -1,38 +1,40 @@
 # -*- coding: utf-8 -*-
-"""Conținutul arborelui Learn: 1 rădăcină + 8 ramuri tehnice = 50 de lecții.
+"""Conținutul arborelui Learn: o rădăcină și 8 ramuri tehnice, 50 de lecții.
 
-Fiecare lecție are conținut real (intro + pași + tips), un quiz de trecere și un
-quiz de mastery mai greu. Poziția în fagure NU se scrie de mână: ramura dă
-coloana (`col`), iar ordinea în listă dă adâncimea — `services.learn` traduce
-perechea în coordonate axiale de hexagon.
+Fiecare lecție are conținut real, adică intro, pași și tips, un quiz de
+trecere și unul de mastery, mai greu.
 
-Prerechizitele implicite sunt „lecția precedentă din ramură" (prima din ramură
-depinde de rădăcină). `extra` adaugă legături între ramuri — ele dau fagurelui
-aspectul de rețea, nu de opt liste paralele.
+Poziția în fagure nu se scrie de mână. Ramura dă coloana, iar ordinea în listă
+dă adâncimea. services/learn.py traduce perechea în coordonate axiale.
 
-`req_tier` e treapta minimă de rank (0 = Copper I … 15 = Chef); XP-ul se
-calculează din ea în `services.learn`, ca să rămână coerent pe tot arborele.
+Prerechizita implicită e lecția precedentă din ramură, iar prima din ramură
+depinde de rădăcină. `extra` adaugă legături între ramuri, și ele dau
+fagurelui aspectul de rețea, nu de opt liste paralele.
 
-Conținutul e în engleză, ca restul conținutului din aplicație; doar chrome-ul
-interfeței trece prin i18n.
+`req_tier` e treapta minimă de rank, 0 e Copper I și 15 e Chef. XP-ul se
+calculează din ea în services/learn.py, ca să rămână coerent pe tot arborele.
+
+Conținutul e în engleză, ca restul conținutului. Doar chrome-ul interfeței
+trece prin i18n.
 """
 from data.branch_core import LESSONS as _CORE
 from data.branch_mid import LESSONS as _MID
 from data.branch_craft import LESSONS as _CRAFT
 from data.branch_finish import LESSONS as _FINISH
 
-# `angle` is the compass bearing the branch grows along, in screen degrees:
-# 0 = right, 90 = down, 180 = left, 270 = up. Foundations sits at the centre and
-# the eight branches radiate out from it, 45° apart.
+# `angle` e direcția în care crește ramura, în grade de ecran: 0 la dreapta,
+# 90 în jos, 180 la stânga, 270 în sus. Foundations stă în centru, iar cele
+# opt ramuri pleacă din el, la 45 de grade una de alta.
 #
-# The order around the wheel is not arbitrary. Several lessons depend on a
-# lesson in another branch (`extra`), and those links are drawn as lines across
-# the board — put two linked branches on opposite sides and the line cuts
-# straight through the middle. This order minimises the total distance those
-# cross-links have to span: neighbours here are branches that actually depend on
-# each other (sauces next to eggs and plating, heat next to stocks, bread next
-# to fermentation). Knife Skills has no cross-links, so it takes the leftover
-# slot.
+# Ordinea pe cerc nu e arbitrară. Câteva lecții depind de o lecție din altă
+# ramură, prin `extra`, iar legăturile alea se desenează ca linii peste
+# planșă. Două ramuri legate, puse față în față, ar da o linie care taie prin
+# mijloc.
+#
+# Ordinea de mai jos scurtează distanța totală a legăturilor: vecinii de aici
+# sunt ramuri care chiar depind una de alta, sosuri lângă ouă și plating,
+# căldură lângă fonduri, pâine lângă fermentație. Knife Skills n-are legături
+# încrucișate, deci ia locul rămas.
 BRANCHES = [
     {"id": "eggs",    "name": "Eggs & Dairy",              "icon": "🥚", "color": "#e0a92a", "angle": 270},
     {"id": "sauce",   "name": "Sauces & Emulsions",        "icon": "🥣", "color": "#b8894a", "angle": 315},
@@ -44,7 +46,7 @@ BRANCHES = [
     {"id": "knife",   "name": "Knife Skills",              "icon": "🔪", "color": "#c2603f", "angle": 225},
 ]
 
-# Rădăcina fagurelui — singura lecție fără prerechizite.
+# Rădăcina fagurelui, singura lecție fără prerechizite.
 ROOT = {
     "slug": "foundations",
     "branch": "root",
@@ -95,7 +97,7 @@ ROOT = {
     ],
 }
 
-# Ordinea contează: în cadrul unei ramuri, poziția în listă = adâncimea.
+# Ordinea contează: în cadrul unei ramuri, poziția în listă e adâncimea.
 LESSONS = _CORE + _MID + _CRAFT + _FINISH
 
 ALL_NODES = [ROOT] + LESSONS

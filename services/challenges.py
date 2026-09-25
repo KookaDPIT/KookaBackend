@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """Provocările zilnice.
 
-Trei rețete pe zi, una ușoară / una medie / una grea, alese determinist pentru
-data curentă și memorate în `daily_challenges` — același calcul leneș ca la
-Daily Global Dish, fără scheduler. Se completează gătind rețeta și trecând
-verificarea AI a pozei, iar XP-ul depinde de rank-ul rețetei.
+Trei rețete pe zi, una ușoară, una medie, una grea, alese determinist pentru
+data curentă și memorate în `daily_challenges`. Același calcul leneș ca la
+felul zilei, fără scheduler.
+
+Se completează gătind rețeta și trecând verificarea AI a pozei. XP-ul depinde
+de rank-ul rețetei.
 """
 import hashlib
 from datetime import datetime
@@ -14,8 +16,8 @@ from sqlalchemy.orm import Session
 import models
 from services import ranks, visibility
 
-# XP per rank de rețetă — o provocare de Platinum trebuie să conteze vizibil mai
-# mult decât una de Copper, altfel nimeni nu alege greul.
+# XP per rank de rețetă. O provocare Platinum trebuie să conteze vizibil mai
+# mult decât una Copper, altfel nimeni nu alege greul.
 XP_BY_RANK = {
     "copper": 60,
     "bronze": 90,
@@ -39,8 +41,10 @@ def today() -> str:
 
 
 def _pick(recipes: list, date: str, slot: int):
-    """Alegere deterministă: aceeași zi + același slot dau mereu aceeași rețetă,
-    fără să stocăm o sămânță aleatoare."""
+    """Alegere deterministă.
+
+    Aceeași zi și același slot dau mereu aceeași rețetă, fără sămânță stocată.
+    """
     if not recipes:
         return None
     digest = hashlib.sha256(f"{date}:{slot}".encode()).hexdigest()
@@ -58,7 +62,7 @@ def _eligible(db: Session, rank_ids: list):
 
 
 def ensure_today(db: Session) -> list:
-    """Întoarce (creând la nevoie) provocările zilei de azi."""
+    """Provocările de azi, create la nevoie."""
     date = today()
     existing = (
         db.query(models.DailyChallenge)
@@ -78,8 +82,8 @@ def ensure_today(db: Session) -> list:
             continue
         pool = [r for r in _eligible(db, spec["ranks"]) if r.id not in used]
         if not pool:
-            # Catalogul nu are nimic la rank-ul cerut — sărim slotul; se va
-            # completa de la sine când apar rețete potrivite.
+            # Catalogul n-are nimic la rank-ul cerut. Sărim slotul, se va
+            # completa singur când apar rețete potrivite.
             continue
         pool.sort(key=lambda r: r.id)
         recipe = _pick(pool, date, spec["slot"])
@@ -138,9 +142,9 @@ def list_for_user(db: Session, user) -> list:
             "rank": row.rank,
             "rank_name": ranks.RANK_BY_ID.get(row.rank, {}).get("name", row.rank),
             "done": row.id in done,
-            # Rețetele peste rank nu se mai blochează nicăieri (vezi
-            # routers/recipes.get_recipe), deci nici provocarea nu se blochează:
-            # spunem doar că e peste nivelul tău, ca să știi în ce intri.
+            # Rețetele peste rank nu se mai blochează nicăieri, vezi
+            # routers/recipes.get_recipe. Nici provocarea nu se blochează.
+            # Spunem doar că e peste nivelul tău, ca să știi în ce intri.
             "above_rank": not ranks.can_access_recipe(user.xp_total, row.rank),
             "recipe": {
                 "id": recipe.id,
@@ -154,8 +158,11 @@ def list_for_user(db: Session, user) -> list:
 
 
 def complete_for_recipe(db: Session, user, recipe_id: int):
-    """Apelat după o verificare AI reușită: dacă rețeta gătită e provocarea de
-    azi, o marchează terminată. Întoarce provocarea completată sau None."""
+    """Apelat după o verificare AI reușită.
+
+    Dacă rețeta gătită e provocarea de azi, o marchează terminată. Întoarce
+    provocarea completată, sau None.
+    """
     rows = ensure_today(db)
     match = next((row for row in rows if row.recipe_id == recipe_id), None)
     if match is None:
