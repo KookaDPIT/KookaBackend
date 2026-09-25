@@ -164,9 +164,33 @@ def recipe_to_dict(db: Session, r: "models.Recipe", full: bool = False,
                 # scrise direct în engleză și pentru cele publicate înainte să
                 # păstrăm originalul — interfața nu oferă atunci comutatorul.
                 "original": _original_block(r),
+                # În ce limbă e, de fapt, textul din câmpurile de mai sus.
+                #
+                # Regula „conținutul e mereu engleză" ține doar cât timp
+                # traducerea chiar rulează. Când modelul e indisponibil,
+                # `translate_recipe` întoarce textul neatins, `original_*`
+                # rămân goale și în DB ajunge o rețetă scrisă în română cu
+                # `source_language='ro'`. Interfețele deduceau limba („n-are
+                # original, deci e engleză") și nimereau exact pe dos: ofereau
+                # o traducere din engleză în engleză, adică niciun buton.
+                # Aici nu e nimic de dedus — știm care dintre cele două s-a
+                # întâmplat, după cum am păstrat sau nu originalul.
+                "content_language": content_language(r),
             }
         )
     return data
+
+
+def content_language(r) -> str:
+    """Limba textului din `title`/`steps`/`ingredients`, așa cum e salvat.
+
+    Dacă am păstrat un original, înseamnă că traducerea a reușit și ce e în
+    câmpurile normale e engleză. Dacă nu, textul e exact ce a scris autorul,
+    în limba detectată la publicare.
+    """
+    if (getattr(r, "original_title", "") or "").strip():
+        return "en"
+    return (getattr(r, "source_language", "") or "en").lower()[:2] or "en"
 
 
 def _original_block(r):

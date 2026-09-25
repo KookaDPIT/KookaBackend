@@ -236,9 +236,20 @@ def translate_recipe_on_demand(
         "steps": json.loads(recipe.steps or "[]"),
     }
 
-    # Cere traducerea în limba în care rețeta e deja scrisă: n-are ce traduce.
-    if code == "en":
-        return {"language": "en", "cached": False, "translated": False, **source}
+    # Cere traducerea în limba în care rețeta E DEJA scrisă: n-are ce traduce.
+    #
+    # Comparația e cu limba reală a textului, nu cu "en". Când traducerea de la
+    # publicare n-a putut rula, în câmpurile rețetei a rămas textul autorului,
+    # iar un `lang=en` pe o rețetă românească ar fi întors româna curată
+    # etichetată drept engleză.
+    content_lang = serializers.content_language(recipe)
+    if code == content_lang:
+        return {
+            "language": content_lang,
+            "cached": False,
+            "translated": False,
+            **source,
+        }
 
     cached = (
         db.query(models.RecipeTranslation)
